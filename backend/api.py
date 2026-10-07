@@ -12,6 +12,7 @@ from backend.storage import Conflict, diff, now, uid
 from backend.models import CATALOG, hardware
 from backend.agents import apply_proposals
 from backend.research import parse_document
+from backend.checkpoints import dependency_status, source_spec, inspect_local, inspect_remote, fetch_checkpoint, downloaded_source
 
 router = APIRouter(prefix="/api")
 MAX_TEXT = 80_000
@@ -56,6 +57,10 @@ class Selection(Version):
     ids: list[str] = Field(max_length=500)
 
 
+class MergeReview(Version):
+    proposal_ids: list[str] = Field(default_factory=list, max_length=10000)
+
+
 class Refine(Version):
     focus: int | None = Field(default=None, ge=0)
 
@@ -70,7 +75,10 @@ class Settings(Input):
 
 class LoadModel(Input):
     model: Literal["compact", "dream", "llada"]
-    path: str = ""
+    path: str = Field(default="", max_length=4096)
+    source: Literal["catalog", "huggingface", "local"] = "catalog"
+    repo: str = Field(default="", max_length=300)
+    revision: str = Field(default="", max_length=200)
     device: str = Field(default="cpu", pattern=r"^(cpu|mps|cuda:[0-9]+)$")
     steps: int = Field(default=64, ge=16, le=512)
     context: int | None = Field(default=None, ge=512, le=32768)
@@ -90,6 +98,12 @@ class LoadModel(Input):
 
 class Download(Input):
     model: Literal["compact", "dream", "llada"]
+    repo: str = Field(default="", max_length=300)
+    revision: str = Field(default="", max_length=200)
+
+
+class InspectCheckpoint(Download):
+    path: str = Field(default="", max_length=4096)
 
 
 def services(request):
@@ -171,8 +185,8 @@ async def restore_draft(pid: str, data: Restore, request: Request):
 
 
 @router.post("/projects/{pid}/merge-review")
-async def merge_review(pid: str, data: Version, request: Request):
-    return services(request).store.review(pid, data.expected_version)
+async def merge_review(pid: str, data: MergeReview, request: Request):
+    return services(request).store.review(pid, data.expected_version, data.proposal_ids)
 
 
 @router.post("/projects/{pid}/merge/{review_id}")
@@ -411,28 +425,43 @@ async def models(request: Request):
     state = services(request)
     catalog = [{"id": key, **info, "downloaded": (state.store.directory / "models" / key / "config.json").is_file()} for key, info in CATALOG.items()]
     return {"catalog": catalog, "runtime": state.models.status, "downloads": state.downloads,
-            "mcp": {"state": state.tools.state, "error": state.tools.error}, "data_directory": str(state.store.directory)}
+            "mcp": {"state": state.tools.state, "error": state.tools.error}, "data_directory": str(state.store.directory),
+            "dependencies": dependency_status()}
+
+
+@router.post("/models/inspect")
+async def inspect_model(data: InspectCheckpoint, request: Request):
+    if data.path.strip():
+        return {"source": "local", **await asyncio.to_thread(inspect_local, data.path, data.model)}
+    spec = source_spec(data.model, data.repo, data.revision)
+    try:
+        return await asyncio.to_thread(inspect_remote, services(request).store.directory, spec)
+    except Exception as exc:
+        raise ValueError(f"Could not inspect the Hugging Face checkpoint: {exc}") from exc
 
 
 @router.post("/models/download")
 async def download_model(data: Download, request: Request):
     state = services(request)
-    if state.downloads.get(data.model, {}).get("state") == "downloading":
-        return state.downloads[data.model]
-    info = CATALOG[data.model]
-    path = state.store.directory / "models" / data.model
+    spec = source_spec(data.model, data.repo, data.revision)
+    key = spec["id"]
+    if state.downloads.get(key, {}).get("state") == "downloading":
+        return state.downloads[key]
+    # Reserve before starting the task so duplicate HTTP requests share one job.
+    state.downloads[key] = {**spec, "state": "downloading", "stage": "Checking repository"}
     async def download():
-        state.downloads[data.model] = {"state": "downloading", "path": str(path), "revision": info["revision"]}
         try:
-            from huggingface_hub import snapshot_download
-            await asyncio.to_thread(snapshot_download, info["repo"], revision=info["revision"], local_dir=path)
-            state.downloads[data.model]["state"] = "complete"
+            record = await asyncio.to_thread(inspect_remote, state.store.directory, spec)
+            state.downloads[key].update(record, stage="Downloading checkpoint files")
+            checked = await asyncio.to_thread(fetch_checkpoint, record)
+            state.downloads[key].update(checked, state="complete", stage="Ready to load")
+            state.store.set_config("model_downloads", {k:v for k,v in state.downloads.items() if v.get("state") == "complete"})
         except Exception as exc:
-            state.downloads[data.model].update(state="error", error=str(exc))
+            state.downloads[key].update(state="error", error=str(exc))
     task = asyncio.create_task(download())
     state.background.add(task)
     task.add_done_callback(state.background.discard)
-    return {"state": "downloading"}
+    return state.downloads[key]
 
 
 @router.post("/models/load")
@@ -440,13 +469,33 @@ async def load_model(data: LoadModel, request: Request):
     state = services(request)
     if state.models.status["state"] == "loading":
         raise Conflict("A model is already loading.")
+    dependencies = dependency_status()
+    missing = dependencies["missing"] + (["bitsandbytes"] if data.quantize and not dependencies["packages"]["bitsandbytes"] else [])
+    if missing:
+        raise ValueError(f"Missing model dependencies in {dependencies['python']}: {', '.join(missing)}. Run python scripts/setup.py --install-models{' --quantize' if data.quantize else ''} in the Splash project folder, then restart Splash.")
     config = data.model_dump(exclude_none=True)
-    config["path"] = str(Path(data.path).expanduser().resolve()) if data.path else str(state.store.directory / "models" / data.model)
-    if not (Path(config["path"]) / "config.json").is_file():
-        raise ValueError("Download the model or supply an existing checkpoint directory first.")
+    if data.source == "huggingface":
+        if not data.repo.strip():
+            raise ValueError("Enter the Hugging Face repository to load.")
+        record = downloaded_source(state.downloads, source_spec(data.model, data.repo, data.revision))
+        config.update(path=record["path"], repo=record["repo"], revision=record["revision"])
+    elif data.path.strip():
+        config.update(path=str(Path(data.path).expanduser().resolve()), source="local", repo="", revision="")
+    elif data.source == "local":
+        raise ValueError("Enter the local checkpoint directory.")
+    else:
+        config.update(path=str(state.store.directory / "models" / data.model),
+                      repo=CATALOG[data.model]["repo"], revision=CATALOG[data.model]["revision"])
+        if state.downloads.get(data.model, {}).get("state") == "downloading":
+            raise Conflict("Wait for this checkpoint download to finish before loading.")
+    await asyncio.to_thread(inspect_local, config["path"], data.model)
     config["context"] = min(config.get("context", CATALOG[data.model]["context"]), CATALOG[data.model]["context"])
-    state.store.set_config("model", config)
-    task = asyncio.create_task(state.models.load(config))
+    state.models.status = {"state": "loading", "model": data.model, "engine": "diffusion", "config": config}
+    async def load():
+        result = await state.models.load(config)
+        if result["state"] == "ready":
+            state.store.set_config("model", config)
+    task = asyncio.create_task(load())
     state.background.add(task)
     task.add_done_callback(state.background.discard)
     return {"state": "loading"}

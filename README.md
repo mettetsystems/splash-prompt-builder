@@ -12,7 +12,7 @@ This release includes real diffusion inference, a persistent MCP tool host, and 
 
 ## Start here
 
-You need **Python 3.11 or later**, **Node.js 22.12 or later with npm**, and a current browser. Setup downloads application dependencies. Model packages and checkpoints are separate, larger downloads.
+You need **Python 3.11 or later**, **Node.js 22.12 or later with npm**, and a current browser. Setup installs the editor, builds the frontend, and checks the dependencies for your hardware. Add `--install-models` to install the matching model runtime too. Checkpoints remain separate, larger downloads.
 
 From the repository directory on Linux or macOS:
 
@@ -37,6 +37,43 @@ python3 scripts/start.py --port 8001 --data-dir .local-data
 ```
 
 On Windows, replace `python3` with `py -3`. These launchers always bind to loopback. Splash is a single-user local application, not an authenticated public service.
+
+### Hardware profiles and dependency checks
+
+Setup checks **the project's `.venv`**, even when another Python environment is active in your terminal. It reports Python and Node versions, pinned app/model packages, model-library import failures, GPU architecture and driver, RAM, free VRAM, and free disk space. A short-lived process runs a small matrix/softmax operation on the selected device family; `--quantize` also tests an NF4 round trip. Checks do not download model weights or change saved projects.
+
+```sh
+# Diagnose an existing install without installing or changing anything.
+python3 scripts/setup.py --check
+
+# Install the editor and the runtime selected for this machine.
+python3 scripts/setup.py --install-models
+
+# Fedora / GTX 1050: install the legacy NVIDIA runtime and check Compact capacity.
+python3 scripts/setup.py --profile nvidia-legacy --level compact --install-models
+
+# RTX 5090: include the NF4 dependency and check Extended capacity.
+python3 scripts/setup.py --profile nvidia --level extended --quantize --install-models
+
+# Machine-readable diagnostics, or editor-only validation.
+python3 scripts/setup.py --check --json
+python3 scripts/setup.py --check --profile editor
+```
+
+| Setup profile | Intended hardware | Pinned PyTorch build |
+|---|---|---|
+| `auto` (default) | Selects the NVIDIA GPU with the most VRAM, otherwise Apple Silicon or CPU | Resolves to a profile below |
+| `nvidia-legacy` | Maxwell, Pascal (including GTX 1050), Volta; also usable on supported Turing/Ampere/Ada/Hopper cards | `2.14.1+cu126` from the official CUDA 12.6 index |
+| `nvidia` | Turing and newer, including RTX 2070 and RTX 5090 | `2.14.1+cu130` from the official CUDA 13.0 index |
+| `cpu` | CPU execution | `2.14.1+cpu` on Linux/Windows; macOS Apple Silicon wheel from PyPI |
+| `metal` | macOS on Apple Silicon | `2.14.1` from PyPI; Metal execution must pass |
+| `editor` | Projects, editing, history, and research without model inference | No model runtime required |
+
+The bundled NVIDIA installation profiles target Linux/Windows x86-64. Intel macOS has no wheel for the pinned model runtime; the editor remains available there. [PyTorch's legacy GPU guidance](https://dev-discuss.pytorch.org/t/notice-cuda-12-6-wheels-will-no-longer-be-published-from-pytorch-2-15-drops-maxwell-pascal-volta/3432) explains why Pascal needs the CUDA 12.6 build rather than CUDA 13. Auto-detection cannot identify an NVIDIA card when its driver or `nvidia-smi` is unavailable; the report makes this visible. No system drivers are installed or changed.
+
+`--level compact`, `balanced`, and `extended` select the resource estimates for Qwen3 diffusion, Dream, and LLaDA. They do not select a model in the app or download weights. Add `--quantize` for the pinned bitsandbytes dependency on an NVIDIA profile. Memory/disk estimates are advisory; a passing runtime check is not a guarantee of model fit, speed, or quality. GTX 1050, Windows, and Metal model inference remain unverified on actual hardware.
+
+Normal editor setup can finish successfully while reporting missing model packages. `--check` returns exit code **1** for missing or incompatible required dependencies, and **0** when checks pass; use `--profile editor` when you intentionally do not want inference. `--install-models` also fails if the final model runtime/device check fails. A working PyTorch build is kept when it matches the selected profile; CPU checks can also use an existing CUDA build. Installing a different GPU profile can replace the PyTorch wheel inside `.venv`, so stop Splash first. Checkpoints and saved projects are preserved.
 
 ### Manual installation
 
@@ -64,7 +101,7 @@ The runtime dependencies, including the official `mcp==2.3.0` Python SDK, are pi
 
 ## Install and select a model
 
-Install a PyTorch build appropriate to your operating system and GPU using the [official PyTorch installer](https://pytorch.org/get-started/locally/), then install the model adapters:
+The simplest path is `python3 scripts/setup.py --install-models` (see the profiles above). For manual installation, choose a PyTorch build appropriate to your operating system and GPU using the [official PyTorch installer](https://pytorch.org/get-started/locally/), then install the model adapters:
 
 ```sh
 .venv/bin/python -m pip install -r backend/requirements-models.txt
@@ -78,16 +115,28 @@ On Windows use `.\.venv\Scripts\python.exe` in place of `.venv/bin/python` in al
 .venv/bin/python -m pip install bitsandbytes==0.50.2
 ```
 
-Use a separate environment for an older GPU; the CUDA 13 profile is not the GTX 1050 profile. For CPU-only use, select the CPU wheel from PyTorch's installer and leave NF4 and CPU offload unchecked. For Apple Silicon, install the macOS PyTorch wheel and try the Metal device check; **Metal remains unverified in this release**, so CPU is the available fallback. A failed accelerator check is shown as an error and never changes the selected engine silently.
+Use `--profile nvidia-legacy` on the GTX 1050; its CUDA 12.6 build differs from the CUDA 13 build above. For CPU-only use, select the CPU profile and leave NF4 and CPU offload unchecked. For Apple Silicon, use the Metal profile; **Metal remains unverified in this release**, so CPU is an explicit fallback. A failed accelerator check is shown as an error and never changes the selected engine silently.
 
 Open **Model & hardware**:
 
-1. Scan the machine. Splash reports OS, CPU threads, RAM, disk space, GPU name and architecture, driver, and free VRAM. Device indices use PCI ordering.
-2. Choose a model and device. Download the pinned checkpoint, or enter the directory of an existing complete checkpoint. Allow space for the download, extraction/cache metadata, and runtime memory.
+1. Refresh hardware and dependencies. Splash reports OS, CPU threads, RAM, disk space, package versions, and free/total VRAM. **Free VRAM is current available capacity**; the loaded model and runtime allocations consume part of the card's total memory. Device indices use PCI ordering.
+2. Choose an adapter family and checkpoint source: **Recommended**, **Hugging Face**, or **Local directory**. The adapter must match the checkpoint architecture. Allow space for the download, extraction/cache metadata, and runtime memory.
 3. Set the context budget and diffusion steps. Enable **NF4** for a compatible CUDA device with bitsandbytes installed. CPU offload is a separate, experimental option, with a default 6 GiB GPU / 24 GiB CPU budget.
 4. Click **Load & run check**. The worker loads actual weights and runs a generation. The dialog reports the result, latency, and peak allocated GPU memory. The selected configuration is restored at the next application start.
 
 All projects use this one model; agents supply different instructions and tool permissions. Changing the selected model replaces the worker's loaded model. Hugging Face downloads use pinned commit revisions and reuse partial downloads when retried. Downloaded models live under the application's `models/` directory. Checkpoints from your own directory are used in place.
+
+### Hugging Face and local repositories
+
+For a Hugging Face checkpoint, select **Hugging Face**, enter `owner/model` or `https://huggingface.co/owner/model`, and optionally supply a branch, tag, or commit in **Revision**. A blank revision means `main`. **Check checkpoint source** reads metadata/configuration, shows repository file size where available, validates the architecture, and resolves the requested revision to an immutable commit. **Download from Hugging Face** downloads that commit. Then select your device and click **Load & run check**. Downloading never loads a model automatically.
+
+Custom checkpoints currently need one of the bundled adapter types: `a2d-qwen3` (Compact), `Dream` (Balanced), or `llada2_moe` (Extended). A Hugging Face account or repository existing does not establish compatibility. Arbitrary autoregressive models, GGUF, and other diffusion architectures need additional adapters. Compatible configuration is only a preliminary check; actual loading/generation still has to succeed.
+
+For a local model repository, select **Local directory** and enter its full path, such as `~/models/my-checkpoint` or `C:\models\my-checkpoint`. The folder needs `config.json`, tokenizer files, and actual weights (including every indexed shard). A code-only Git checkout or Git LFS pointer is insufficient; the checker explains which files are missing. Local paths are used in place and no model is uploaded.
+
+The **Downloaded checkpoints & transfers** list preserves completed downloads across restarts and lets you reuse them with **Use this checkpoint**. Custom downloads are stored by repository and resolved commit under `models/hub/`, independently of recommended checkpoints. Accepted edits and synthesized variants record the actual Hugging Face repository/commit; local checkpoints are labeled local rather than attributed to a catalog revision. Failed model loads do not replace the last successfully saved model configuration.
+
+Private/gated models use the Hugging Face credentials already configured on the backend machine (local Hub login or `HF_TOKEN`); Splash does not collect or store tokens in its project database. Obtain access through Hugging Face first. Repository IDs and root repository URLs are accepted; put `/tree/...` revisions in the separate Revision field. Checkpoint-source inspection contacts Hugging Face and caches the small configuration file, but does not execute model code. See [Hugging Face download documentation](https://huggingface.co/docs/huggingface_hub/guides/download).
 
 The candidate checkpoints contain custom model code, loaded locally with `trust_remote_code=True`. Bundled downloads pin that code to these revisions; only select an existing checkpoint directory you trust.
 
@@ -126,18 +175,20 @@ For a full restore of the exact application state, back up the SQLite database a
 
 ## Drafts, suggestions, and explicit merges
 
-The left panel is the current main. The right panel is the working draft. Typing autosaves after a short pause, without promoting anything. Live enrichment waits for idle input and adapts its delay to measured inference time; disable it for manual-only refinement.
+The **Working Draft** on the right is your editable input space. The **Main Prompt** pane on the left displays the live enriched output as a complete prompt, rather than a list of language-edit cards. Typing autosaves after a short pause. The left pane reflects your input while generation is pending and updates when the model finishes; its status distinguishes waiting, running, ready, and failed enrichment. Updates depend on your hardware's generation speed, rather than arriving on every keystroke. Live enrichment waits for idle input and adapts its delay to measured inference time; disable it for manual-only refinement.
 
-**Refine entire prompt** produces edit cards. Each card shows the removed and added text. Research cards also include a rationale, evidence excerpt, source link, and evidence level. **Accept edit** or **Accept all** changes only the draft; **Dismiss** rejects a card. Stale edits cannot apply to a different draft revision.
+The live pane is a preview until you confirm a merge. Generation never replaces your input draft. **Copy live prompt** copies the enriched output; **Show saved main** displays the last confirmed main; **Discard enrichment** returns the preview to your draft. **Refine entire prompt** requests a fresh rewrite in the same pane. Stale results cannot apply to a newer draft, including input containing emoji or other multilingual text.
+
+For coding and research projects, evidence-based additions remain under **Research suggestions**, with rationale, supporting passages, source links, and evidence levels. **Accept edit** or **Accept all research** explicitly adds those suggestions to your input draft; **Dismiss** rejects them. They are never silently included in the live language rewrite.
 
 Merge is always two stages:
 
-1. **Review merge** displays the exact additions, removals, and attached source references between main and draft.
-2. **Confirm merge & archive prior main** promotes that reviewed draft and retains the previous main in history, in one SQLite transaction.
+1. **Review live merge** displays the exact additions, removals, and attached source references between the saved main and the live enriched prompt. Without a pending rewrite, **Review draft merge** reviews your input draft. Reviewing changes neither your input nor the saved main.
+2. **Confirm merge & archive prior main** saves that exact reviewed prompt, retains the previous main and input draft in history, and initializes the next working draft from the promoted text, in one SQLite transaction.
 
-**Keep editing**, Escape, or closing the review leaves the main unchanged. Any intervening draft or main revision change invalidates confirmation. Retrying the same successful confirmation returns the existing result rather than creating another main revision. Tab is ordinary keyboard navigation; it never promotes a prompt.
+**Keep editing**, Escape, or closing the review leaves the main and input unchanged. Any intervening draft, main revision, or reviewed enrichment change invalidates confirmation. Retrying the same successful confirmation returns the existing result rather than creating another main revision. Tab is ordinary keyboard navigation; it never promotes a prompt.
 
-Example: begin with “Explain caching.” Refine and accept a draft that asks for two concrete examples. Review and confirm to create main version 2. If that version drifts from your intent, open version 1 in **Version history** and choose **Restore as draft**. Edit or promote it through the same review flow. Version 2 remains available.
+Example: begin with “Explain caching.” Add “Include two concrete examples” to your working draft. Watch the enriched wording appear in the main pane, then review and confirm to create main version 2. If that version drifts from your intent, open version 1 in **Version history** and choose **Restore as draft**. Edit or promote it through the same review flow. Version 2 remains available.
 
 ### Recovery and concurrent editing
 
@@ -298,7 +349,7 @@ Interactive HTTP documentation is available at **http://127.0.0.1:8000/docs**. P
 | `/projects/{id}/branches/generate`, `/select`, `/synthesize` | Manage branch cards and variants |
 | `/projects/{id}/research`, `/jobs` | Research and job status |
 | `/projects/{id}/export`, `/projects/import-file` | Export an archive/prompt or import an archive |
-| `/hardware`, `/models`, `/models/download`, `/models/load` | Inspect and manage shared inference |
+| `/hardware`, `/models`, `/models/inspect`, `/models/download`, `/models/load` | Hardware/package status, checkpoint inspection, pinned Hub downloads, and shared inference |
 
 `/ws/projects/{id}` emits protocol-2 events scoped to that project: `project_changed`, `progress`, `job_complete`, `job_error`, `job_canceled`, and `project_deleted`. Project-change events include agent, main ID, and draft version. Job results carry proposals, context accounting, research results, or variants. Mutations remain validated HTTP operations.
 
@@ -309,6 +360,8 @@ The earlier deterministic mock remains isolated in `backend/engine.py` and legac
 - `backend/storage.py`: transactional project store and revision invariants.
 - `backend/api.py`: project/model HTTP APIs and scoped WebSocket events.
 - `backend/models.py`: hardware inspection, adapters, and persistent inference process.
+- `backend/checkpoints.py`: compatible local checkpoint checks, Hugging Face revision resolution, and resumable downloads.
+- `scripts/setup.py`, `scripts/dependencies.py`: hardware-specific dependency installation and isolated runtime checks.
 - `backend/agents.py`: policies, proposals, branches, synthesis, and research scheduling.
 - `backend/mcp_host.py`, `mcp_server.py`, `research.py`: shared MCP lifecycle, permissions, local retrieval, and public providers.
 - `frontend/src/app.jsx`, `components/StudioParts.jsx`, `client.js`: project UI, merge review, and serialized draft recovery.
@@ -321,6 +374,10 @@ The earlier deterministic mock remains isolated in `backend/engine.py` and legac
 | Symptom | What to do |
 |---|---|
 | Model controls say no model is ready | Install PyTorch/model requirements, download or select a checkpoint, then load it. Editing/history remain available. |
+| `ModuleNotFoundError: No module named 'torch'` | Run `python3 scripts/setup.py --install-models` from the project directory. On GTX 1050 use `--profile nvidia-legacy --level compact`. Restart using `scripts/start.py` so Splash uses the same `.venv` that was checked. |
+| GPU selector shows less memory than the card's advertised capacity | The first value is **free** VRAM and the second is **total** VRAM. Loaded models, runtime caches, and other GPU programs reduce free memory. Use `nvidia-smi` to inspect current processes. |
+| Hub download fails or says access denied | Check the repository ID/revision, connection, and local Hub login or `HF_TOKEN`. Gated repositories require prior access. Retry the download to reuse partial files. |
+| Checkpoint check reports wrong architecture or LFS pointers | Choose the matching adapter and a complete weights directory. Pull Git LFS weights or download through Hugging Face. A Git source repository alone is not a model checkpoint. |
 | CUDA unavailable or GPU scan fails | Run `nvidia-smi` in a normal local terminal. A sandbox permission failure does not prove the GPU or driver is absent. Match the runtime to the architecture. |
 | GPU out of memory | Reduce context, choose Compact, or try the measured Dream NF4 profile with bitsandbytes. Check other GPU processes. Offload is experimental and slower. |
 | Model import or custom-code error | Use the pinned requirements and matching catalog checkpoint. LLaDA requires the bundled eager-mask/RoPE compatibility path. Do not mix a random Transformers major version into the tested environment. |
@@ -328,6 +385,7 @@ The earlier deterministic mock remains isolated in `backend/engine.py` and legac
 | Research returns 429, CAPTCHA, or no results | Other providers may continue. Wait for backoff, try a focused query, or supply a public source URL. Scholar blocking is not bypassed. |
 | MCP tools are unavailable | Local editing still works. The host retries server startup automatically; inspect backend stderr and verify the pinned MCP dependency in the same virtual environment. |
 | Unsaved changes or a stale-merge error | Resolve the displayed recovery/conflict choice, save the draft, and open a new merge review. Never force an old review onto a new revision. |
+| The main pane does not show enrichment | Turn on **Live enrichment**, load a model successfully, and type in **Working Draft**. If viewing the saved version, select **Show live enrichment**. Wait for generation to finish or inspect its error. **Refine entire prompt** requests a manual update. Saving a new main version still requires review and confirmation. |
 | PDF yields no text | Use a text-based PDF or paste a transcription; OCR is outside scope. |
 | UI shows old content or is not built | Run `npm --prefix frontend run build`, then reload. Restart the backend after backend changes. |
 | Tests hang in a restricted sandbox | Run in a normal local terminal with loopback socket access. In-process WebSocket tests still need event-loop socket facilities. |

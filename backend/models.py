@@ -50,7 +50,7 @@ def hardware():
     for gpu in result["gpus"]:
         old = float(gpu["capability"]) < 7.5
         result["profiles"].append({"device": f"cuda:{gpu['index']}", "label": gpu["name"],
-            "runtime": "Pascal / CUDA 11.8 compatibility environment or CPU" if old else "Modern CUDA",
+            "runtime": "Legacy NVIDIA / PyTorch 2.14.1 CUDA 12.6 (setup --profile nvidia-legacy)" if old else "Modern CUDA (setup --profile nvidia)",
             "candidates": [key for key, model in CATALOG.items() if key == "compact" or gpu["free_mb"] > model["download_gb"] * 1100],
             "verified": False})
     if platform.system() == "Darwin" and platform.machine() == "arm64":

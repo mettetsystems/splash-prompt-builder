@@ -36,6 +36,7 @@ async def lifespan(application):
     state.tools = ToolHost(state.store.directory)
     state.agents = Agents(state.store, state.models, state.tools)
     state.jobs, state.job_results, state.downloads, state.sockets = {}, {}, {}, {}
+    state.downloads = state.store.config("model_downloads") or {}
     state.background = set()
     state.tools.start()
     configured = state.store.config("model")

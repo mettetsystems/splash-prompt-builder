@@ -55,3 +55,25 @@ export class DraftBuffer {
 export function safeUrl(value) {
   try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) ? url.href : null } catch { return null }
 }
+
+export function isEnrichment(proposal) {
+  return proposal.rationale === 'Language and instruction precision'
+}
+
+// Backend offsets count Unicode code points, not JavaScript UTF-16 units.
+// Keep research additions out of the live rewrite until individually approved.
+export function liveEnrichment(draft, proposals) {
+  const edits = proposals.filter(isEnrichment)
+  const original = Array.from(draft.text)
+  let result = [...original], boundary = original.length + 1
+  for (const edit of [...edits].sort((a, b) => b.start - a.start)) {
+    if (edit.version !== draft.version || !Number.isInteger(edit.start) || !Number.isInteger(edit.end) ||
+        edit.start < 0 || edit.end < edit.start || edit.end > original.length || edit.end > boundary ||
+        original.slice(edit.start, edit.end).join('') !== edit.before) {
+      return {text: draft.text, ids: [], version: draft.version}
+    }
+    result = [...result.slice(0, edit.start), ...Array.from(edit.after), ...result.slice(edit.end)]
+    boundary = edit.start
+  }
+  return {text: result.join(''), ids: edits.map(edit => edit.id), version: draft.version}
+}

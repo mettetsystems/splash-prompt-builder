@@ -99,7 +99,11 @@ class Agents:
     def generation_info(self):
         status = self.models.status
         config = status.get("config", {})
-        return {"model":status.get("model"), "model_revision":CATALOG.get(status.get("model"), {}).get("revision"),
+        catalog = CATALOG.get(status.get("model"), {})
+        source = config.get("source", "catalog")
+        return {"model":status.get("model"), "model_source":source,
+                "model_repository":config.get("repo") or (catalog.get("repo") if source == "catalog" else None),
+                "model_revision":config.get("revision") or (catalog.get("revision") if source == "catalog" else None),
                 "device":config.get("device"), "steps":config.get("steps"), "created":now()}
 
     async def enrich(self, pid, expected, focus=None):

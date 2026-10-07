@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { DraftBuffer, safeUrl } from '../src/client.js'
+import { DraftBuffer, safeUrl, liveEnrichment } from '../src/client.js'
 
 test('typing during an autosave preserves newer text and serializes revisions', async () => {
   let release
@@ -40,4 +40,24 @@ test('source links reject script and local-file URL schemes',()=>{
   assert.equal(safeUrl('javascript:alert(1)'),null)
   assert.equal(safeUrl('file:///etc/passwd'),null)
   assert.equal(safeUrl('https://example.org/paper'),'https://example.org/paper')
+})
+
+test('live enrichment composes Unicode edits without changing input or approving research', () => {
+  const draft = {text:'🌊 write ai prompts', version:4}
+  const edits = [
+    {id:'a', start:2, end:7, before:'write', after:'Develop', version:4, rationale:'Language and instruction precision'},
+    {id:'b', start:8, end:10, before:'ai', after:'AI', version:4, rationale:'Language and instruction precision'},
+    {id:'research', start:18, end:18, before:'', after:' Cite this paper.', version:4, rationale:'Potential evidence; relevance requires review.'},
+  ]
+  assert.deepEqual(liveEnrichment(draft, edits), {text:'🌊 Develop AI prompts', ids:['a','b'], version:4})
+  assert.equal(draft.text, '🌊 write ai prompts')
+  assert.equal(edits[0].before, 'write')
+})
+
+test('stale, overlapping, or mismatched live edits cannot alter the preview', () => {
+  const draft = {text:'a small prompt', version:2}
+  const edit = {id:'a', start:2, end:7, before:'small', after:'precise', version:2, rationale:'Language and instruction precision'}
+  for (const edits of [[{...edit, version:1}], [{...edit, before:'wrong'}], [edit, {...edit, id:'b'}], [{...edit, end:50}]]) {
+    assert.deepEqual(liveEnrichment(draft, edits), {text:draft.text, ids:[], version:2})
+  }
 })
