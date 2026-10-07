@@ -28,7 +28,7 @@ py -3 scripts/setup.py --dev
 py -3 scripts/start.py
 ```
 
-Open **http://127.0.0.1:8000**. Stop the server with Ctrl+C. No account or API key is required. Creating projects, editing, imports, history, and merges work before a model is installed. Enrichment and branches become available after a successful model load; there is no automatic mock fallback.
+Open **http://127.0.0.1:8000**. Stop a foreground server with Ctrl+C in the terminal that started it. The launcher checks the port first: if Splash is already running, it prints the existing URL and exits without starting another server or loading another model. No account or API key is required. Creating projects, editing, imports, history, and merges work before a model is installed. Enrichment and branches become available after a successful model load; there is no automatic mock fallback.
 
 If port 8000 is busy, choose another port. To keep this checkout's data in a specific directory:
 
@@ -374,6 +374,7 @@ The earlier deterministic mock remains isolated in `backend/engine.py` and legac
 | Symptom | What to do |
 |---|---|
 | Model controls say no model is ready | Install PyTorch/model requirements, download or select a checkpoint, then load it. Editing/history remain available. |
+| `address already in use` on port 8000 | Splash may already be running. Open `http://127.0.0.1:8000/`; the updated `scripts/start.py` detects an existing instance before loading weights. To restart, stop the process that owns that port first. Do not launch several instances against the same GPU. |
 | `ModuleNotFoundError: No module named 'torch'` | Run `python3 scripts/setup.py --install-models` from the project directory. On GTX 1050 use `--profile nvidia-legacy --level compact`. Restart using `scripts/start.py` so Splash uses the same `.venv` that was checked. |
 | GPU selector shows less memory than the card's advertised capacity | The first value is **free** VRAM and the second is **total** VRAM. Loaded models, runtime caches, and other GPU programs reduce free memory. Use `nvidia-smi` to inspect current processes. |
 | Hub download fails or says access denied | Check the repository ID/revision, connection, and local Hub login or `HF_TOKEN`. Gated repositories require prior access. Retry the download to reuse partial files. |

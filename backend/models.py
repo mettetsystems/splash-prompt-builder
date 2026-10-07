@@ -205,6 +205,24 @@ class DiffusionAdapter:
 
 
 def worker_main(inbox, outbox, cancel):
+    import signal
+
+    def shutdown(signum, frame):
+        # Let multiprocessing's finalizers release child-owned semaphores when
+        # a slow checkpoint load needs to be interrupted during app shutdown.
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+    try:
+        run_worker(inbox, outbox, cancel)
+    finally:
+        for channel in (inbox, outbox):
+            channel.cancel_join_thread()
+            channel.close()
+
+
+def run_worker(inbox, outbox, cancel):
     adapter = None
     while True:
         job = inbox.get()
@@ -244,6 +262,7 @@ class ModelService:
         self.sequence = 0
         self.status = {"state": "unloaded", "model": None, "engine": "diffusion", "error": None}
         self.active_priority = 100
+        self.closed = False
 
     def invalidate(self):
         self.sequence += 1
@@ -332,6 +351,9 @@ class ModelService:
             return result["sections"]
 
     async def close(self):
+        if self.closed:
+            return
+        self.closed = True
         self.invalidate()
         if self.process and self.process.is_alive():
             self.inbox.put(None)
@@ -339,3 +361,13 @@ class ModelService:
             if self.process.is_alive():
                 self.process.terminate()
                 await asyncio.to_thread(self.process.join, 2)
+            if self.process.is_alive():
+                self.process.kill()
+                await asyncio.to_thread(self.process.join, 2)
+        if self.process and not self.process.is_alive():
+            self.process.close()
+        for channel in (self.inbox, self.outbox):
+            channel.cancel_join_thread()
+            channel.close()
+        self.process = self.inbox = self.outbox = self.cancel = None
+        self.status.update(state="unloaded")

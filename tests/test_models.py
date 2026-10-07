@@ -1,4 +1,9 @@
 import asyncio
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
 from unittest.mock import AsyncMock
 
@@ -6,6 +11,14 @@ from backend.models import ModelService, DiffusionAdapter
 
 
 class SchedulerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_close_releases_ipc_and_is_idempotent(self):
+        service = ModelService()
+        await service.close()
+        await service.close()
+        self.assertIsNone(service.inbox)
+        self.assertIsNone(service.outbox)
+        self.assertIsNone(service.cancel)
+
     async def test_only_latest_pending_request_runs(self):
         service = ModelService()
         service.status = {"state":"ready"}
@@ -51,6 +64,37 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SectionTests(unittest.TestCase):
+    def test_spawned_worker_shutdown_has_no_resource_tracker_warning(self):
+        # Use a real spawned process, without importing Torch or downloading weights.
+        script = """
+import asyncio
+import multiprocessing as mp
+from backend.models import ModelService, worker_main
+async def check(force=False):
+    service = ModelService()
+    service.process = mp.get_context('spawn').Process(target=worker_main, args=(service.inbox, service.outbox, service.cancel))
+    service.process.start()
+    result = await service.exchange({'op':'sections'})
+    assert result['ok'] is False
+    if force:
+        service.process.terminate()
+        service.process.join(5)
+        assert service.process.exitcode == 0
+    await service.close()
+if __name__ == '__main__':
+    asyncio.run(check())
+    import os
+    if os.name != 'nt':
+        asyncio.run(check(force=True))
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'check_shutdown.py'
+            path.write_text(script)
+            env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]))
+            result = subprocess.run([sys.executable, str(path)], env=env, capture_output=True, text=True, timeout=45)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('leaked semaphore', result.stderr)
+
     def test_exact_unicode_sections_and_token_budget(self):
         adapter=DiffusionAdapter.__new__(DiffusionAdapter)
         adapter.context=512
