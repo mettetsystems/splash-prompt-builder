@@ -1,0 +1,29 @@
+{
+  "project_id": "import-d0a95a25615d",
+  "task_id": "STEP_003A_FIX_V2_REPAIR_2",
+  "attempt": 2,
+  "passed": false,
+  "timestamp": "2026-10-02T09:35:59.807692+00:00",
+  "tests": [
+    {
+      "command": [
+        ".venv/bin/python",
+        "-m",
+        "uvicorn",
+        "backend.app:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000"
+      ],
+      "exit_code": -1,
+      "stdout": "",
+      "stderr": "INFO:     Started server process [2377900]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)\n\nCommand timed out after 1500 seconds. Next attempt permits 1800 seconds. Inspect progress before retrying.\n",
+      "duration_seconds": 1500.0635,
+      "timed_out": true,
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    }
+  ],
+  "last_error": "Schema repair failed after 2 attempt(s): JSON did not match WorkerResult: 4 validation errors for WorkerResult\nsummary\n  Field required [type=missing, input_value={'path': 'backend/app.py'...)\\n        sys.exit(1)'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\npath\n  Extra inputs are not permitted [type=extra_forbidden, input_value='backend/app.py', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden\nold_text\n  Extra inputs are not permitted [type=extra_forbidden, input_value='if __name__ == \"__main__...r)\\n        sys.exit(1)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden\nnew_text\n  Extra inputs are not permitted [type=extra_forbidden, input_value='if __name__ == \"__main__...r)\\n        sys.exit(1)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+}

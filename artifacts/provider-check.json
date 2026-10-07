@@ -1,0 +1,43 @@
+{
+  "crossref": {
+    "status": "passed",
+    "results": 5,
+    "example": [
+      {
+        "title": "The Mathematics of Large Language Diffusion Models versus Large Language Autoregressive Models",
+        "url": "https://doi.org/10.2139/ssrn.5149339",
+        "level": "metadata"
+      }
+    ],
+    "latency_ms": 328
+  },
+  "semantic_scholar": {
+    "status": "unavailable",
+    "error": "Client error '429 ' for url 'https://18.165.98.92/graph/v1/paper/search?query=diffusion+language+models&limit=5&fields=title%2Curl%2Cabstract%2Cyear%2CexternalIds'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429",
+    "latency_ms": 160
+  },
+  "official_docs": {
+    "status": "passed",
+    "results": 2,
+    "example": [
+      {
+        "title": "asyncio \u2014 Asynchronous I/O \u2014 Python 3.14.8 documentation",
+        "url": "https://docs.python.org/3/library/asyncio.html",
+        "level": "snippet"
+      }
+    ],
+    "latency_ms": 266
+  },
+  "fetch_source": {
+    "status": "passed",
+    "results": 1,
+    "example": [
+      {
+        "title": "asyncio \u2014 Asynchronous I/O \u2014 Python 3.14.8 documentation",
+        "url": "https://docs.python.org/3/library/asyncio.html",
+        "level": "full_text_excerpt"
+      }
+    ],
+    "latency_ms": 82
+  }
+}

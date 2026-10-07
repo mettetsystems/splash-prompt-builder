@@ -1,0 +1,32 @@
+[
+  {
+    "model": "dream",
+    "revision": "05334cb9faaf763692dcf9d8737c642be2b2a6ae",
+    "device": "cuda:1",
+    "quantize": false,
+    "time": "2026-10-06T04:06:15Z",
+    "device_name": "NVIDIA GeForce RTX 5090",
+    "samples": [
+      {
+        "prompt": "Rewrite this as a clear precise instruction, without answering it: Explain caching in two sentences.",
+        "text": "Provide a concise explanation of caching in two sentences.",
+        "latency_ms": 9879,
+        "input_tokens": 38,
+        "output_tokens": 128,
+        "context_limit": 2048,
+        "peak_vram_mb": 14838
+      },
+      {
+        "prompt": "Improve this coding prompt without changing constraints: Build a Python CLI that reads a UTF-8 file. Do not use external dependencies. Include tests.",
+        "text": "Build a Python CLI that reads a UTF-8 file without external dependencies.",
+        "latency_ms": 1359,
+        "input_tokens": 49,
+        "output_tokens": 128,
+        "context_limit": 2048,
+        "peak_vram_mb": 14842
+      }
+    ],
+    "execution": "passed",
+    "quality": "requires human review; execution is not a quality guarantee"
+  }
+]

@@ -1,0 +1,16 @@
+{
+  "checked_at": "2026-10-06T05:06:35.527430+00:00",
+  "agent": "splash",
+  "input": "Explain a delayed product launch to customers clearly. Do not promise a new release date.",
+  "proposed_text": "Explain a delayed product launch to customers clearly, without specifying or implying a new release date.\n\nRequired constraints from the original prompt:\n- Do not promise a new release date.",
+  "model": {
+    "model": "llada",
+    "model_revision": "20e64e2ad21644d0e5248586ed9c942cdd45de0f",
+    "device": "cuda:1",
+    "steps": 256,
+    "created": "2026-10-06T05:04:55.634259+00:00"
+  },
+  "main_unchanged": true,
+  "draft_unchanged_until_acceptance": true,
+  "explicit_requirement_preserved": true
+}

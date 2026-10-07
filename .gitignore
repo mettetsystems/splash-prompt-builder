@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+.env
+.env.*
+!.env.example
+artifacts/logs/
+models/
+checkpoints/
+.models/
+.local-data/
+.test-data/
+.cache/
+*.log

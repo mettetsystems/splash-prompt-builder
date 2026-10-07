@@ -1,0 +1,34 @@
+[
+  {
+    "model": "dream",
+    "revision": "05334cb9faaf763692dcf9d8737c642be2b2a6ae",
+    "device": "cuda:0",
+    "quantize": true,
+    "steps": 64,
+    "output_budget": 128,
+    "time": "2026-10-06T04:34:11Z",
+    "device_name": "NVIDIA GeForce RTX 2070",
+    "samples": [
+      {
+        "prompt": "Rewrite this as a clear precise instruction, without answering it: Explain caching in two sentences.",
+        "text": "Explain caching in two sentences.",
+        "latency_ms": 11303,
+        "input_tokens": 38,
+        "output_tokens": 128,
+        "context_limit": 2048,
+        "peak_vram_mb": 5837
+      },
+      {
+        "prompt": "Improve this coding prompt without changing constraints: Build a Python CLI that reads a UTF-8 file. Do not use external dependencies. Include tests.",
+        "text": "Build a Python CLI that reads a UTF-8 file and does not use external dependencies. Include tests.",
+        "latency_ms": 10618,
+        "input_tokens": 49,
+        "output_tokens": 128,
+        "context_limit": 2048,
+        "peak_vram_mb": 5841
+      }
+    ],
+    "execution": "passed",
+    "quality": "requires human review; execution is not a quality guarantee"
+  }
+]

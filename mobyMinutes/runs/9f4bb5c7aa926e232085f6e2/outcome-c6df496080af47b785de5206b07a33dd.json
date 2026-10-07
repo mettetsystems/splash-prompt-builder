@@ -1,0 +1,23 @@
+{
+  "project_id": "import-d0a95a25615d",
+  "task_id": "STEP_004",
+  "attempt": 1,
+  "passed": false,
+  "timestamp": "2026-10-04T05:03:19.554572+00:00",
+  "tests": [
+    {
+      "command": [
+        "python",
+        "tests/test_latency.py"
+      ],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "Traceback (most recent call last):\n  File \"/run/media/ojoseph/git-repo/projects/splash/tests/test_latency.py\", line 2, in <module>\n    import websockets\nModuleNotFoundError: No module named 'websockets'\n",
+      "duration_seconds": 0.0407,
+      "timed_out": false,
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    }
+  ],
+  "last_error": "python tests/test_latency.py exited 1"
+}

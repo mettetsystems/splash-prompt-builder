@@ -1,0 +1,62 @@
+[
+  {
+    "model": "compact",
+    "revision": "c8d24a3f4adaeef46881b450e1bf7d1005203bd7",
+    "device": "cuda:0",
+    "quantize": false,
+    "time": "2026-10-06T04:24:44Z",
+    "device_name": "NVIDIA GeForce RTX 2070",
+    "samples": [
+      {
+        "prompt": "Rewrite this as a clear precise instruction, without answering it: Explain caching in two sentences.",
+        "text": "Caching is a technique used to computer programs store store frequently accessed data in a temporary to store memory in response of the request of a specific operation. This technique helps to speed up the performance of programs by by reducing the time of access to to retrieve the data from the disk.. Caching is a technique used to computer programs store store frequently accessed data in a temporary to store memory in response of the request of a specific operation. This technique helps to speed up the performance of programs by by reducing the time of access to to retrieve the data from the disk.",
+        "latency_ms": 2227,
+        "input_tokens": 31,
+        "output_tokens": 128,
+        "context_limit": 1024,
+        "peak_vram_mb": 1228
+      },
+      {
+        "prompt": "Improve this coding prompt without changing constraints: Build a Python CLI that reads a UTF-8 file. Do not use external dependencies. Include tests.",
+        "text": "Build a Python CLI that reads a UTF-8 file. Do not use external dependencies. Include tests.\n\nConsider the following improvements:\n\n1. Create a Python CLI that reads a UTF-8 file.\n2. Avoid the use of dependencies.\n3. Include tests.\n\n the following should be considered:\n\n1. Create a Python CLI that reads a UTF-8 file.\n2. Avoid the use of dependencies.\n3. Include tests.\n\nConsider following improvements: \n\n1. Create a Python CLI that reads a UTF-8 file.\n2. Avoid the use of dependencies.\n3. Include tests.",
+        "latency_ms": 1081,
+        "input_tokens": 42,
+        "output_tokens": 128,
+        "context_limit": 1024,
+        "peak_vram_mb": 1232
+      }
+    ],
+    "execution": "passed",
+    "quality": "requires human review; execution is not a quality guarantee"
+  },
+  {
+    "model": "compact",
+    "revision": "c8d24a3f4adaeef46881b450e1bf7d1005203bd7",
+    "device": "cuda:1",
+    "quantize": false,
+    "time": "2026-10-06T04:24:54Z",
+    "device_name": "NVIDIA GeForce RTX 5090",
+    "samples": [
+      {
+        "prompt": "Rewrite this as a clear precise instruction, without answering it: Explain caching in two sentences.",
+        "text": "Caching is a technique used to computer programs store frequently accessed of data in a cache to speed the retrieval of data data from a database server. It is the process of storing data in a cache to speed the retrieval of data data from a database server. It is the process of storing data in a cache to speed the retrieval of data data from a database server. Caching is a technique used to computer programs store frequently accessed of data in a cache to speed the retrieval of data data from a database server. It is the process of storing data in a cache to speed the retrieval of data data from a database server.",
+        "latency_ms": 1673,
+        "input_tokens": 31,
+        "output_tokens": 128,
+        "context_limit": 1024,
+        "peak_vram_mb": 1228
+      },
+      {
+        "prompt": "Improve this coding prompt without changing constraints: Build a Python CLI that reads a UTF-8 file. Do not use external dependencies. Include tests.",
+        "text": "Build a Python CLI that reads a UTF-8 file. Do not use external dependencies. Include tests.\n\nConsider the following improvements:\n\n1. Create a Python CLI that reads a UTF-8 file.\n2. Avoid the use of dependencies.\n3. Include tests.\n\n the following should be considered:\n\n1. Create a Python CLI that reads a UTF-8 file.\n2. Avoid the use of dependencies.\n3. Include tests.\n\n the following should be considered:\n\n1. Create a Python CLI that reads a UTF-8 file.\n2. Avoid the use of dependencies.\n3. Include tests.",
+        "latency_ms": 679,
+        "input_tokens": 42,
+        "output_tokens": 128,
+        "context_limit": 1024,
+        "peak_vram_mb": 1232
+      }
+    ],
+    "execution": "passed",
+    "quality": "requires human review; execution is not a quality guarantee"
+  }
+]

@@ -1,0 +1,6 @@
+# Install the appropriate PyTorch build first (see README hardware profiles).
+transformers==4.57.6
+huggingface-hub==0.36.2
+accelerate==1.15.0
+safetensors==0.8.0
+# Optional CUDA NF4: pip install bitsandbytes==0.50.2

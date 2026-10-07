@@ -1,0 +1,127 @@
+[
+  {
+    "language": "English",
+    "agent": "splash-code",
+    "prompt": "Build a Python CLI that reads a UTF-8 file. Do not use external dependencies. Include tests.",
+    "text": "Objective:\nCreate a Python command-line interface (CLI) that reads a UTF-8 file.\n\nConstraints:\n-. No use of external dependencies.\n-. The CLI should be able to read UTF-8 files.\n.\nImplementation Phases:\n-. Design the CLI structure.\n-. Implement the functionality to read a UTF-8 file.\n-. Test the CLI.\n.\nTests:\n-. Test that the CLI can read a UTF a UTF-8 file.\n-. Test that the CLI can handle non-ASCII errors when reading a UTF-8 file.\n-. Test that the CLI can handle a wide of of characters when reading a UTF-8 file.\n.\n\nAcceptance Criteria:\n-. The CLI should not use any external dependencies.\n-. The CLI should successfully read and display the contents of a UTF-8 file.",
+    "latency_ms": 3671,
+    "input_tokens": 117,
+    "output_tokens": 256,
+    "context_limit": 2048,
+    "peak_vram_mb": 15080,
+    "literal_checks": {
+      "Python": true,
+      "UTF-8": true,
+      "test": true
+    }
+  },
+  {
+    "language": "Spanish",
+    "agent": "splash-code",
+    "prompt": "Crea una herramienta Python que lea un archivo UTF-8. No uses dependencias externas. Incluye pruebas.",
+    "text": "Create a Python tool that reads a UTF-8 file. Use no external dependencies. Include tests.",
+    "latency_ms": 2261,
+    "input_tokens": 124,
+    "output_tokens": 256,
+    "context_limit": 2048,
+    "peak_vram_mb": 15082,
+    "literal_checks": {
+      "Python": true,
+      "UTF-8": true,
+      "test": true
+    }
+  },
+  {
+    "language": "French",
+    "agent": "splash-code",
+    "prompt": "Créer un outil Python qui lit un fichier UTF-8. Ne pas utiliser de dépendances externes. Inclure des tests.",
+    "text": "Prompt section:\nCreate a Python tool that reads a UTF-8 file without external dependencies.",
+    "latency_ms": 2278,
+    "input_tokens": 127,
+    "output_tokens": 256,
+    "context_limit": 2048,
+    "peak_vram_mb": 15084,
+    "literal_checks": {
+      "Python": true,
+      "UTF-8": true,
+      "test": false
+    }
+  },
+  {
+    "language": "German",
+    "agent": "splash-code",
+    "prompt": "Erstelle ein Python-Werkzeug, das eine UTF-8-Datei liest. Keine externen Abhängigkeiten verwenden. Tests einschließen.",
+    "text": "Create a Python tool that reads a UTF-8 file. Use no external dependencies. Include tests.",
+    "latency_ms": 2687,
+    "input_tokens": 133,
+    "output_tokens": 256,
+    "context_limit": 2048,
+    "peak_vram_mb": 15085,
+    "literal_checks": {
+      "Python": true,
+      "UTF-8": true,
+      "test": true
+    }
+  },
+  {
+    "language": "Chinese",
+    "agent": "splash-code",
+    "prompt": "编写一个Python命令行工具，读取UTF-8文件。不要使用外部依赖。包含测试。",
+    "text": "Write a Python command-line tool to read UTF-8 files. Avoid using external dependencies. Include tests.",
+    "latency_ms": 2262,
+    "input_tokens": 118,
+    "output_tokens": 256,
+    "context_limit": 2048,
+    "peak_vram_mb": 15080,
+    "literal_checks": {
+      "Python": true,
+      "UTF-8": true,
+      "test": true
+    }
+  },
+  {
+    "language": "Arabic",
+    "agent": "splash-code",
+    "prompt": "أنشئ أداة Python لقراءة ملف UTF-8. لا تستخدم مكتبات خارجية. أضف اختبارات.",
+    "text": "Create a Python tool to read a UTF-8 file without using any external libraries. Add tests.",
+    "latency_ms": 2267,
+    "input_tokens": 128,
+    "output_tokens": 256,
+    "context_limit": 2048,
+    "peak_vram_mb": 15084,
+    "literal_checks": {
+      "Python": true,
+      "UTF-8": true,
+      "test": true
+    }
+  },
+  {
+    "language": "English",
+    "agent": "splash",
+    "prompt": "Help me explain our delayed launch to customers clearly. Do not promise a new release date.",
+    "text": "Assist me in clearly explaining our delayed launch to customers, avoiding any commitment of a new release date",
+    "latency_ms": 2256,
+    "input_tokens": 110,
+    "output_tokens": 256,
+    "context_limit": 2048,
+    "peak_vram_mb": 15078,
+    "literal_checks": {
+      "not": false
+    }
+  },
+  {
+    "language": "English",
+    "agent": "splash-search",
+    "prompt": "Study bilingual education and reading outcomes using peer-reviewed research from 2015 onward. Preserve informed consent.",
+    "text": "Prompt section:\n Study bilingual education and reading outcomes using peer-reviewed research from 2015 onward. Preserve informed consent.",
+    "latency_ms": 2262,
+    "input_tokens": 120,
+    "output_tokens": 256,
+    "context_limit": 2048,
+    "peak_vram_mb": 15082,
+    "literal_checks": {
+      "2015": true,
+      "consent": true
+    }
+  }
+]

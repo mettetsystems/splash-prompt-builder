@@ -1,0 +1,36 @@
+{
+  "checked_at": "2026-10-06T05:06:35.527430+00:00",
+  "backend_tests_passed": 49,
+  "frontend_test_files_passed": 2,
+  "frontend_test_cases_defined": 12,
+  "production_build": "passed",
+  "npm_audit": "0 vulnerabilities",
+  "pip_check": "no broken requirements",
+  "clean_application_install": "passed on Linux/Python 3.14",
+  "mcp_checks": [
+    "persistent stdio connection",
+    "host-scoped private context",
+    "malformed request isolation",
+    "owned server interruption and recovery"
+  ],
+  "browser_checks": [
+    "project creation and cross-agent import",
+    "reload recovery",
+    "draft/main isolation",
+    "five selected research cards and synthesis",
+    "previous draft retained",
+    "review cancellation",
+    "confirmed merge and archived mains",
+    "official source approval changes draft only",
+    "typing while inference runs",
+    "390px and 1440px responsive layouts",
+    "final local model ready and live enrichment proposals"
+  ],
+  "unverified": [
+    "GTX 1050 GPU execution",
+    "Windows end-to-end",
+    "macOS/Metal execution",
+    "statistical quality guarantees",
+    "cross-platform UI latency percentiles"
+  ]
+}

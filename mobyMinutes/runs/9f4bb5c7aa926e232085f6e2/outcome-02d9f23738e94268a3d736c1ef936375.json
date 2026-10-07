@@ -1,0 +1,38 @@
+{
+  "project_id": "import-d0a95a25615d",
+  "task_id": "STEP_001B",
+  "attempt": 5,
+  "passed": true,
+  "timestamp": "2026-10-02T03:59:32.770396+00:00",
+  "tests": [
+    {
+      "command": [
+        "ls",
+        ".venv/bin/python"
+      ],
+      "exit_code": 0,
+      "stdout": ".venv/bin/python\n",
+      "stderr": "",
+      "duration_seconds": 0.0011,
+      "timed_out": false,
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    },
+    {
+      "command": [
+        ".venv/bin/python",
+        "-B",
+        "-c",
+        "import sys; from importlib.metadata import version; assert sys.prefix != sys.base_prefix, 'Expected project venv'; print({name: version(name) for name in ('torch', 'fastapi', 'peft')})"
+      ],
+      "exit_code": 0,
+      "stdout": "{'torch': '2.14.1', 'fastapi': '0.142.2', 'peft': '0.21.2'}\n",
+      "stderr": "",
+      "duration_seconds": 0.0379,
+      "timed_out": false,
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    }
+  ],
+  "last_error": null
+}

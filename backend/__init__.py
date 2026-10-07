@@ -1,0 +1,1 @@
+"""Splash local prompt builder."""

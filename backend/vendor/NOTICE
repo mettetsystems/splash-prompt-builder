@@ -1,0 +1,7 @@
+a2d.py is adapted from dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1
+https://huggingface.co/dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1
+Revision: c8d24a3f4adaeef46881b450e1bf7d1005203bd7
+Distributed under Apache License 2.0.
+Changes: corrected config_class; removed global model registration and training/demo CLI.
+The upstream model builds on Qwen3 and Hugging Face Transformers.
+masking.py is a Splash eager-attention compatibility implementation, not copied model code.

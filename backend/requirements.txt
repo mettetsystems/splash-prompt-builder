@@ -1,0 +1,12 @@
+fastapi==0.142.2
+pydantic==2.13.5
+uvicorn==0.54.0
+websockets==17.1
+httpx==0.28.1
+mcp==2.3.0
+jsonschema==4.26.0
+pypdf==6.19.0
+platformdirs==4.12.3
+beautifulsoup4==4.15.0
+python-multipart==0.0.32
+psutil==7.2.2
