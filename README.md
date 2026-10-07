@@ -1,5 +1,9 @@
 # Splash
 
+<p align="center">
+  <img src="frontend/src/assets/splash-logo.jpg" alt="Splash — Prompt Enrichment" width="440" />
+</p>
+
 **A local prompt studio with diffusion models, evidence, and reversible decisions.**
 
 Splash helps turn an initial idea into a clearer instruction for an LLM or agent. Each prompt lives in its own project, with an immutable main prompt, an editable working draft, context, suggested edits, and a history of every promotion. A model can propose a change; only you can make it the main prompt.
@@ -308,6 +312,7 @@ The earlier deterministic mock remains isolated in `backend/engine.py` and legac
 - `backend/agents.py`: policies, proposals, branches, synthesis, and research scheduling.
 - `backend/mcp_host.py`, `mcp_server.py`, `research.py`: shared MCP lifecycle, permissions, local retrieval, and public providers.
 - `frontend/src/app.jsx`, `components/StudioParts.jsx`, `client.js`: project UI, merge review, and serialized draft recovery.
+- `frontend/src/assets/splash-logo.jpg`: original Splash logo, shared by the app and this README. `frontend/src/index.css` defines the charcoal, teal, and violet theme with reusable color variables.
 - `tests/`, `frontend/tests/`, `scripts/`, `artifacts/`: regression tests and reproducible qualification records.
 - `mobyMinutes/`: historical design/build records, not the current runtime specification.
 
