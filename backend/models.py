@@ -54,7 +54,13 @@ def hardware():
             "candidates": [key for key, model in CATALOG.items() if key == "compact" or gpu["free_mb"] > model["download_gb"] * 1100],
             "verified": False})
     if platform.system() == "Darwin" and platform.machine() == "arm64":
-        result["profiles"].append({"device": "mps", "label": "Apple Metal (execution check required)", "candidates": ["compact"], "verified": False})
+        result["profiles"].append({
+            "device": "mps", "label": "Apple Metal",
+            "runtime": "Unverified until a load check passes; CPU remains available",
+            "candidates": ["compact"], "verified": False,
+        })
+        if not result["gpus"]:
+            result["gpu_status"] = "Apple GPU present; Metal execution is unverified until a load check passes"
     result["profiles"].append({"device": "cpu", "label": "CPU · slower updates", "candidates": ["compact"], "verified": False})
     return result
 

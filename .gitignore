@@ -15,3 +15,4 @@ checkpoints/
 .test-data/
 .cache/
 *.log
+/dist/

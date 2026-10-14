@@ -38,6 +38,8 @@ python3 scripts/start.py --port 8001 --data-dir .local-data
 
 On Windows, replace `python3` with `py -3`. These launchers always bind to loopback. Splash is a single-user local application, not an authenticated public service.
 
+To install a double-clickable Mac app instead of running from the repository, see [macOS application](#macos-application).
+
 ### Manual installation
 
 Linux/macOS:
@@ -61,6 +63,28 @@ npm --prefix frontend run build
 ```
 
 The runtime dependencies, including the official `mcp==2.3.0` Python SDK, are pinned in [backend/requirements.txt](backend/requirements.txt). Node dependencies use the committed lockfile. Linux is the tested platform; Windows and macOS commands are provided, but their complete application and accelerator workflows have not been tested on those systems.
+
+## macOS application
+
+Build this on the Mac you want to ship to. An Apple Silicon Mac produces an Apple Silicon app. An Intel Mac produces an Intel app. The result is `dist/Splash.app`, which does not need a separate Python or Node install to run.
+
+Requirements on the build Mac: macOS 13 or later, Python 3.11 or later, the Xcode Command Line Tools (`xcode-select --install`), and network access. Node.js 22.12 or later is needed only when `frontend/dist` is not already built. PyTorch's macOS 2.14.1 wheel requires Apple Silicon and macOS 14.
+
+```sh
+python3 scripts/package_macos.py
+```
+
+`make package-macos` runs that same script.
+
+Add `--dmg` to also write `dist/Splash-macos.dmg`. Add `--no-torch` for a smaller app that can edit and store projects without the model runtime. Add `--skip-frontend-build` to reuse an existing `frontend/dist`.
+
+Open `dist/Splash.app`, or copy it to `/Applications`. The app binds to loopback, opens the studio in the browser, and stays in the Dock. Click the Dock icon to bring the studio back. Quit from the **Splash** menu (Command-Q). A second launch reopens the running studio.
+
+If Gatekeeper blocks an unsigned app the first time, right-click `Splash.app` and choose **Open**. Projects and settings stay in `~/Library/Application Support/Splash`. The log is `~/Library/Logs/Splash/splash.log`.
+
+Apple Silicon builds include PyTorch 2.14.1 and the model adapters. Intel builds do not: PyTorch 2.14.1 has no Intel macOS wheel. Download a checkpoint from **Model & hardware** after launch; checkpoints are not stored inside the app. **Metal remains unverified.** A failed Metal check is an error and does not silently switch to CPU. Choose CPU for the measured fallback.
+
+This packager was added from a Linux checkout and has not been launched on macOS here. Build and open it once on the target Mac before relying on it.
 
 ## Install and select a model
 
@@ -331,6 +355,7 @@ The earlier deterministic mock remains isolated in `backend/engine.py` and legac
 | PDF yields no text | Use a text-based PDF or paste a transcription; OCR is outside scope. |
 | UI shows old content or is not built | Run `npm --prefix frontend run build`, then reload. Restart the backend after backend changes. |
 | Tests hang in a restricted sandbox | Run in a normal local terminal with loopback socket access. In-process WebSocket tests still need event-loop socket facilities. |
-| Port already in use | Start with `python3 scripts/start.py --port 8001` or stop your previous Splash instance. |
+| Port already in use | Start with `python3 scripts/start.py --port 8001` or stop your previous Splash instance. The macOS app picks the next free loopback port. |
+| macOS app does not open | Build it on a Mac with `python3 scripts/package_macos.py`. Right-click the app and choose Open the first time. Quit from the Splash menu. Read `~/Library/Logs/Splash/splash.log`. |
 
-Custom training, stronger multilingual/constraint evaluation, certified GTX 1050/Windows/Metal profiles, richer retrieval, cloud synchronization, native desktop packaging, arbitrary external MCP servers, and autonomous code execution are future work. See [MODEL_ROADMAP.md](MODEL_ROADMAP.md) for the remaining model-specific work.
+Custom training, stronger multilingual/constraint evaluation, certified GTX 1050/Windows/Metal profiles, richer retrieval, cloud synchronization, Windows application packaging, arbitrary external MCP servers, and autonomous code execution are future work. A macOS app can be built with `scripts/package_macos.py`. See [MODEL_ROADMAP.md](MODEL_ROADMAP.md) for the remaining model-specific work.

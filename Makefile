@@ -1,7 +1,7 @@
 PYTHON ?= python3
 VENV_PYTHON := .venv/bin/python
 
-.PHONY: setup build run dev-backend dev-frontend test latency audit
+.PHONY: setup build run dev-backend dev-frontend test latency audit package-macos
 
 setup:
 	$(PYTHON) -m venv .venv
@@ -29,3 +29,6 @@ latency:
 
 audit:
 	npm --prefix frontend audit
+
+package-macos:
+	$(PYTHON) scripts/package_macos.py

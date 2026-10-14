@@ -1,0 +1,7 @@
+# Apple Silicon model runtime for the macOS app bundle.
+# Install with the bundled interpreter after backend/requirements.txt.
+# PyTorch's macOS wheel is arm64 and includes the Metal backend.
+# Splash still treats Metal as an execution check; CPU remains the fallback.
+# Intel Macs have no torch 2.14.1 wheel. NF4 quantization stays on CUDA and is omitted here.
+torch==2.14.1
+-r requirements-models.txt
