@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from backend.app import app
-from backend.agents import proposals
+from backend.agents import DEFAULT_SYSTEM_PROMPTS, library_defaults, proposals
 
 
 class ProjectAPI(unittest.TestCase):
@@ -75,6 +75,79 @@ class ProjectAPI(unittest.TestCase):
         self.client.put(self.base+'/draft',json={'text':'Unapproved draft','expected_version':1})
         text=self.client.get(self.base+'/export?format=txt').text
         self.assertEqual(text,self.p['draft']['text'])
+
+    def test_system_prompts_stay_with_their_project(self):
+        created = self.client.put(self.base+'/system-prompts', json={"prompts": [
+            {"name": " Voice ", "text": " Prefer short sentences. ", "enabled": True},
+        ]})
+        self.assertEqual(created.status_code, 200, created.text)
+        saved = created.json()["system_prompts"]
+        self.assertEqual(saved[0]["name"], "Voice")
+        self.assertEqual(saved[0]["text"], "Prefer short sentences.")
+        self.assertEqual(len(saved[0]["id"]), 32)
+        other = self.client.post('/api/projects', json={"agent": "splash", "text": "Explain caching."}).json()
+        self.assertEqual(other["system_prompts"], [])
+        self.assertEqual(self.client.get('/api/projects/'+other["id"]+'/system-prompts').json()["prompts"], [])
+        imported = self.client.post('/api/projects', json={"agent": "splash-code", "text": "import", "source": self.p["id"]}).json()
+        self.assertEqual(imported["system_prompts"], saved)
+        self.assertEqual(self.client.put('/api/projects/'+imported["id"]+'/system-prompts', json={"prompts": []}).json()["system_prompts"], [])
+        self.assertEqual(self.client.get(self.base).json()["system_prompts"], saved)
+        again = self.client.put(self.base+'/system-prompts', json={"prompts": [
+            {"id": saved[0]["id"], "name": "Voice", "text": "Prefer short sentences.", "enabled": False},
+        ]})
+        self.assertEqual(again.json()["system_prompts"][0]["enabled"], False)
+        duplicate = self.client.put(self.base+'/system-prompts', json={"prompts": [
+            {"id": saved[0]["id"], "name": "A", "text": "One", "enabled": True},
+            {"id": saved[0]["id"], "name": "B", "text": "Two", "enabled": True},
+        ]})
+        self.assertEqual(duplicate.status_code, 400)
+        too_many = self.client.put(self.base+'/system-prompts', json={"prompts": [
+            {"name": f"Prompt {index}", "text": "Instruction", "enabled": True} for index in range(13)
+        ]})
+        self.assertEqual(too_many.status_code, 422)
+        self.assertEqual(self.client.get(self.base+'/system-prompts').json()["prompts"][0]["enabled"], False)
+
+    def test_prompt_library_keeps_defaults_and_exports(self):
+        listed = self.client.get('/api/prompt-repo')
+        self.assertEqual(listed.status_code, 200, listed.text)
+        builtins = listed.json()["prompts"]
+        self.assertEqual(builtins, library_defaults())
+        self.assertEqual([item["agent"] for item in builtins], list(DEFAULT_SYSTEM_PROMPTS))
+        for item in builtins:
+            self.assertLessEqual(len(item["text"]), 2000)
+            self.assertTrue(item["builtin"])
+        saved = self.client.post('/api/prompt-repo', json={"name": " Voice ", "text": " Prefer short sentences. ", "agent": "splash", "note": " Kept the rewrite short. "})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        record = saved.json()["prompt"]
+        self.assertEqual(record["name"], "Voice")
+        self.assertEqual(record["text"], "Prefer short sentences.")
+        self.assertEqual(record["note"], "Kept the rewrite short.")
+        self.assertFalse(record["builtin"])
+        self.assertEqual(len(self.client.get('/api/prompt-repo').json()["prompts"]), 4)
+        pulled = self.client.put(self.base+'/system-prompts', json={"prompts": [{"name": record["name"], "text": record["text"], "enabled": True}]})
+        self.assertEqual(pulled.status_code, 200, pulled.text)
+        self.assertEqual(pulled.json()["system_prompts"][0]["text"], "Prefer short sentences.")
+        future = self.client.post('/api/projects', json={"agent": "splash", "text": "Describe tides."}).json()
+        self.assertEqual(future["system_prompts"], [])
+        again = self.client.put('/api/projects/'+future["id"]+'/system-prompts', json={"prompts": [{"name": record["name"], "text": record["text"], "enabled": True}]})
+        self.assertEqual(again.json()["system_prompts"][0]["text"], "Prefer short sentences.")
+        self.assertEqual(self.client.get(self.base).json()["system_prompts"][0]["text"], "Prefer short sentences.")
+        self.assertEqual(self.client.delete('/api/prompt-repo/builtin-splash').status_code, 400)
+        self.assertEqual(len(self.client.get('/api/prompt-repo').json()["prompts"]), 4)
+        removed = self.client.delete('/api/prompt-repo/'+record["id"])
+        self.assertEqual(removed.status_code, 200, removed.text)
+        self.assertEqual(removed.json()["prompts"], library_defaults())
+        self.assertEqual(self.client.get(self.base).json()["system_prompts"][0]["text"], "Prefer short sentences.")
+        imported = self.client.post('/api/prompt-repo/import', json={"format": "splash-system-prompt", "version": 1, "prompt": {"name": "Scope", "text": "Stay inside the stated audience.", "agent": "any", "note": ""}})
+        self.assertEqual(imported.status_code, 200, imported.text)
+        self.assertEqual(imported.json()["prompt"]["agent"], "any")
+        self.assertEqual(self.client.delete('/api/prompt-repo/'+'c'*32).status_code, 404)
+        self.assertEqual(self.client.post('/api/prompt-repo/import', json={"format": "other", "version": 1, "prompt": {"name": "Scope", "text": "Stay inside the stated audience."}}).status_code, 422)
+        for index in range(39):
+            extra = self.client.post('/api/prompt-repo', json={"name": f"Prompt {index}", "text": "Instruction", "agent": "any"})
+            self.assertEqual(extra.status_code, 200, extra.text)
+        full = self.client.post('/api/prompt-repo', json={"name": "One more", "text": "Instruction", "agent": "any"})
+        self.assertEqual(full.status_code, 400, full.text)
 
     def test_invalid_model_options_rejected_before_configuration_changes(self):
         for body in ({'model':'compact','device':'cpu','quantize':True},

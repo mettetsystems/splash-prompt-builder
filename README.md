@@ -135,6 +135,10 @@ Click **New prompt project**, choose an agent, and enter the initial prompt. A p
 
 The agent is fixed for the life of a project. Change the output style under **Context & sources** if you prefer prose. Use sidebar search and **Rename** to organize projects.
 
+Open **System prompts** on a project to add instructions that belong to that project. They travel with the system message when the local model rewrites that project's draft, explores its research branches, synthesizes its directions, or proposes a source-informed edit. Another project's model run does not receive them. Each prompt has a name, an instruction of up to 2,000 characters, and a switch for whether it is used. Disabled prompts stay saved on the project. Built-in agent rules still apply, and these prompts do not promote a main revision. A project holds up to 12. **Import as new** and a complete project archive each take their own copy.
+
+If a project has no enabled system prompt, the model uses that mode's built-in default: one for **splash**, one for **splash-code**, and one for **splash-search**. An enabled project prompt replaces the default. **Prompt library**, in the sidebar or at the bottom of the system-prompt window, keeps those three defaults plus prompts you save from a project. Pull copies a library prompt onto the open project; later edits in the library do not change projects that already pulled it. **Download** writes one prompt as `splash-system-prompt` JSON, and **Import JSON** adds that file to the library on this computer. The library holds 40 saved prompts besides the built-in defaults.
+
 Input can be multilingual. The model is instructed to enrich in English while retaining code, identifiers, quotations, references, numbers, and constraints. Unsupported details should become questions, not asserted requirements. Explicit English requirements such as “Preserve…”, “Do not…”, and “Use only…” are retained in a labeled constraints section when the rewrite does not retain their wording. Literal/code/number checks and a limited multilingual testing-requirement check reject some other lossy outputs. They do **not** prove complete semantic equivalence; examine negations, scope, and implied obligations in the review.
 
 ### Imports and exports
@@ -323,6 +327,10 @@ Interactive HTTP documentation is available at **http://127.0.0.1:8000/docs**. P
 | `/projects/{id}/research`, `/jobs` | Research and job status |
 | `/projects/{id}/export`, `/projects/import-file` | Export an archive/prompt or import an archive |
 | `/hardware`, `/models`, `/models/download`, `/models/load` | Inspect and manage shared inference |
+| `/projects/{id}/system-prompts` | Read or replace that project's system prompts |
+| `/prompt-repo` | List the built-in defaults and saved library, or save one prompt |
+| `/prompt-repo/import` | Add a `splash-system-prompt` version 1 JSON file to the library |
+| `/prompt-repo/{id}` | Remove a saved library prompt; built-in defaults stay |
 
 `/ws/projects/{id}` emits protocol-2 events scoped to that project: `project_changed`, `progress`, `job_complete`, `job_error`, `job_canceled`, and `project_deleted`. Project-change events include agent, main ID, and draft version. Job results carry proposals, context accounting, research results, or variants. Mutations remain validated HTTP operations.
 

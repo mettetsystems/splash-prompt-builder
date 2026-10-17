@@ -904,8 +904,69 @@ dialog {
   color:var(--text);
   width:min(520px,calc(100vw - 28px));
   max-height:90vh;
+  overflow:auto;
   padding:27px;
   box-shadow:0 30px 100px #0008
+}
+.prompt-list {
+  list-style:none;
+  margin:18px 0 8px;
+  padding:0;
+  display:grid;
+  gap:12px
+}
+.prompt-card {
+  border:1px solid var(--border);
+  background:var(--inset);
+  border-radius:10px;
+  padding:14px 14px 10px
+}
+.prompt-card .field {
+  margin:12px 0
+}
+.prompt-card textarea {
+  min-height:88px;
+  resize:vertical
+}
+.prompt-card-head,.prompt-card-foot {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px
+}
+.prompt-card-foot {
+  margin-top:4px
+}
+.library-heading {
+  display:flex;
+  align-items:flex-end;
+  justify-content:space-between;
+  gap:16px;
+  flex-wrap:wrap;
+  margin-top:28px
+}
+.library-heading h3 {
+  margin:0
+}
+.library-heading .field {
+  margin:0;
+  min-width:160px
+}
+.library-actions {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:8px
+}
+.prompt-meta {
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px
+}
+.library-text {
+  white-space:pre-wrap;
+  margin:10px 0 0;
+  line-height:1.55
 }
 dialog::backdrop {
   background:var(--overlay);

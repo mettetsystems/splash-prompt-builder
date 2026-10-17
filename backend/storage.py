@@ -111,6 +111,7 @@ class Store:
                    "documents": copy.deepcopy(imported["documents"]) if imported else [],
                    "sources": copy.deepcopy(imported["sources"]) if imported else [],
                    "branches": [], "proposals": [], "reviews": [], "queries": [],
+                   "system_prompts": copy.deepcopy(imported.get("system_prompts", [])) if imported else [],
                    "settings": {"research": False, "scholar": False, "branch_count": 3,
                                 "output": "prose" if agent == "splash" else "structured"}}
         with self.connect() as db:

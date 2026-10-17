@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock, patch
 
 from backend.storage import Store, Conflict, diff
-from backend.agents import Agents, proposals, apply_proposals, missing_constraints, rank_sources, retain_explicit_requirements
+from backend.agents import Agents, DEFAULT_SYSTEM_PROMPTS, operator_note, proposals, apply_proposals, missing_constraints, rank_sources, retain_explicit_requirements
 from backend.mcp_host import ToolHost
 from backend.research import Providers, parse_document, retrieve_context, public_get
 
@@ -151,6 +151,44 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         with self.store.edit(p["id"]) as p: p["branches"][0]["selected"] = True
         with self.assertRaises(Conflict): await self.agents.branches(p["id"], 1)
         self.assertTrue(self.store.get(p["id"])["branches"][0]["selected"])
+
+    async def test_enabled_system_prompts_are_sent_with_model_runs(self):
+        prompts = [
+            {"id": "a" * 32, "name": "Voice", "text": "Prefer short sentences.", "enabled": True},
+            {"id": "b" * 32, "name": "Off", "text": "Ignore the draft.", "enabled": False},
+        ]
+        self.assertEqual(operator_note([]), "")
+        self.assertNotIn("Ignore the draft.", operator_note(prompts))
+        project = self.store.create("splash", "Explain caching.")
+        with self.store.edit(project["id"]) as saved:
+            saved["system_prompts"] = prompts
+        other = self.store.create("splash", "Explain caching.")
+        await self.agents.enrich(project["id"], 1)
+        system = self.models.generate.await_args.args[0][0]
+        self.assertEqual(system["role"], "system")
+        self.assertIn("Prefer short sentences.", system["content"])
+        self.assertNotIn("Ignore the draft.", system["content"])
+        self.assertNotIn(DEFAULT_SYSTEM_PROMPTS["splash"]["text"], system["content"])
+        self.assertIn("Preserve all constraints", system["content"])
+        self.assertIn("Prefer short sentences.", self.models.sections.await_args.args[1])
+        self.models.generate.reset_mock()
+        await self.agents.enrich(other["id"], 1)
+        fallback = self.models.generate.await_args.args[0][0]["content"]
+        self.assertNotIn("Prefer short sentences.", fallback)
+        self.assertIn(DEFAULT_SYSTEM_PROMPTS["splash"]["text"], fallback)
+        self.assertNotIn(DEFAULT_SYSTEM_PROMPTS["splash-code"]["text"], fallback)
+        coding = self.store.create("splash-code", "Explain caching.")
+        self.models.generate.reset_mock()
+        await self.agents.enrich(coding["id"], 1)
+        coded = self.models.generate.await_args.args[0][0]["content"]
+        self.assertIn(DEFAULT_SYSTEM_PROMPTS["splash-code"]["text"], coded)
+        self.assertNotIn(DEFAULT_SYSTEM_PROMPTS["splash"]["text"], coded)
+        search = self.store.create("splash-search", "Explain caching.")
+        self.models.generate.reset_mock()
+        await self.agents.enrich(search["id"], 1)
+        searched = self.models.generate.await_args.args[0][0]["content"]
+        self.assertIn(DEFAULT_SYSTEM_PROMPTS["splash-search"]["text"], searched)
+        self.assertNotIn(DEFAULT_SYSTEM_PROMPTS["splash-code"]["text"], searched)
 
     async def test_lossy_enrichment_never_creates_proposals(self):
         p = self.store.create("splash-code", "Read `user_id`. Include tests.")

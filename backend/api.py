@@ -2,6 +2,7 @@
 import asyncio
 import json
 import copy
+import re
 from pathlib import Path
 from typing import Literal
 from fastapi import APIRouter, Request, UploadFile, File, WebSocket, WebSocketDisconnect
@@ -10,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.storage import Conflict, diff, now, uid
 from backend.models import CATALOG, hardware
-from backend.agents import apply_proposals
+from backend.agents import apply_proposals, library_defaults
 from backend.research import parse_document
 
 router = APIRouter(prefix="/api")
@@ -92,8 +93,80 @@ class Download(Input):
     model: Literal["compact", "dream", "llada"]
 
 
+class SystemPrompt(Input):
+    id: str = Field(default="", max_length=32)
+    name: str = Field(min_length=1, max_length=80)
+    text: str = Field(min_length=1, max_length=2000)
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def ready(self):
+        self.name, self.text = self.name.strip(), self.text.strip()
+        if not self.name or not self.text:
+            raise ValueError("Give each system prompt a name and instruction.")
+        if len(self.name) > 80 or len(self.text) > 2000:
+            raise ValueError("A system prompt is limited to 80 characters in the name and 2,000 in the instruction.")
+        if self.id and not re.fullmatch(r"[0-9a-f]{32}", self.id):
+            raise ValueError("Use the saved prompt id.")
+        return self
+
+
+class SystemPromptList(Input):
+    prompts: list[SystemPrompt] = Field(max_length=12)
+
+
 def services(request):
     return request.app.state
+
+
+class LibraryPrompt(Input):
+    name: str = Field(min_length=1, max_length=80)
+    text: str = Field(min_length=1, max_length=2000)
+    agent: Literal["splash", "splash-code", "splash-search", "any"] = "any"
+    note: str = Field(default="", max_length=240)
+
+    @model_validator(mode="after")
+    def ready(self):
+        self.name, self.text, self.note = self.name.strip(), self.text.strip(), self.note.strip()
+        if not self.name or not self.text:
+            raise ValueError("Give the library prompt a name and instruction.")
+        if len(self.name) > 80 or len(self.text) > 2000 or len(self.note) > 240:
+            raise ValueError("A library prompt is limited to 80 characters in the name, 2,000 in the instruction, and 240 in the note.")
+        return self
+
+
+class LibraryFile(Input):
+    format: Literal["splash-system-prompt"]
+    version: Literal[1]
+    prompt: LibraryPrompt
+
+
+LIBRARY_LIMIT = 40
+
+
+def saved_library(store):
+    saved = store.config("prompt_repo", [])
+    return [item for item in saved if isinstance(item, dict)] if isinstance(saved, list) else []
+
+
+def remember_library_prompt(store, item):
+    saved = saved_library(store)
+    if len(saved) >= LIBRARY_LIMIT:
+        raise ValueError("The prompt library holds 40 saved prompts. Remove one before adding another.")
+    record = {"id": uid(), "name": item.name, "text": item.text, "agent": item.agent, "note": item.note, "builtin": False}
+    store.set_config("prompt_repo", saved + [record])
+    return record
+
+
+def stored_system_prompts(items):
+    prompts, seen = [], set()
+    for item in items:
+        prompt_id = item.id or uid()
+        if prompt_id in seen:
+            raise ValueError("Each system prompt needs its own id.")
+        seen.add(prompt_id)
+        prompts.append({"id": prompt_id, "name": item.name, "text": item.text, "enabled": item.enabled})
+    return prompts
 
 
 async def publish(state, pid, event, **data):
@@ -260,6 +333,7 @@ async def import_file(request: Request, agent: str, file: UploadFile = File(...)
             if not set(main.get("sources", [])).issubset({s["id"] for s in p["sources"]}):
                 raise ValueError("Missing source references")
             p["origin"] = {"project_id": source["id"], "revision_id": main["id"], "title": source["title"], "agent":source.get("agent", "unknown"), "imported": now()}
+            p["system_prompts"] = stored_system_prompts(SystemPromptList(prompts=source.get("system_prompts", [])).prompts)
             p["draft"]["sources"] = main.get("sources", [])
             p["revisions"][0]["sources"] = main.get("sources", [])
             p["revisions"][0]["metadata"]["origin"] = copy.deepcopy(p["origin"])
@@ -399,6 +473,48 @@ async def jobs(pid: str, request: Request):
     result = {kind:value for (project, kind), value in state.job_results.items() if project == pid}
     result.update({kind: {"status": "running"} for project, kind in state.jobs if project == pid})
     return result
+
+
+@router.get("/projects/{pid}/system-prompts")
+async def system_prompts(pid: str, request: Request):
+    project = services(request).store.get(pid)
+    return {"prompts": project.get("system_prompts", [])}
+
+
+@router.put("/projects/{pid}/system-prompts")
+async def save_system_prompts(pid: str, data: SystemPromptList, request: Request):
+    state = services(request)
+    with state.store.edit(pid) as project:
+        project["system_prompts"] = stored_system_prompts(data.prompts)
+    return await changed(state, project)
+
+
+@router.get("/prompt-repo")
+async def prompt_repo(request: Request):
+    return {"prompts": library_defaults() + saved_library(services(request).store)}
+
+
+@router.post("/prompt-repo")
+async def save_prompt_repo(data: LibraryPrompt, request: Request):
+    return {"prompt": remember_library_prompt(services(request).store, data)}
+
+
+@router.post("/prompt-repo/import")
+async def import_prompt_repo(data: LibraryFile, request: Request):
+    return {"prompt": remember_library_prompt(services(request).store, data.prompt)}
+
+
+@router.delete("/prompt-repo/{prompt_id}")
+async def delete_prompt_repo(prompt_id: str, request: Request):
+    if any(prompt["id"] == prompt_id for prompt in library_defaults()):
+        raise ValueError("Built-in prompts stay in the library.")
+    store = services(request).store
+    saved = saved_library(store)
+    kept = [item for item in saved if item.get("id") != prompt_id]
+    if len(kept) == len(saved):
+        raise KeyError("Library prompt not found")
+    store.set_config("prompt_repo", kept)
+    return {"prompts": library_defaults() + kept}
 
 
 @router.get("/hardware")
