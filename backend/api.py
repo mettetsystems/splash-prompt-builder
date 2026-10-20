@@ -652,6 +652,7 @@ async def save_system_prompts(pid: str, data: SystemPromptList, request: Request
                 if comment['origin'] in ('enrichment', 'review') and comment['status'] == 'open':
                     comment.update(outdated=True, outdated_reason='Project system prompts changed. Review again with the current instructions.')
     if instructions_changed:
+        state.agents.last_research.pop(pid, None)
         for (project_id, _), task in list(state.jobs.items()):
             if project_id == pid:
                 task.cancel()

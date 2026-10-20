@@ -110,10 +110,12 @@ class ProcessingAPI(unittest.TestCase):
         self.assertTrue(before['proposals'])
         with app.state.store.edit(self.p['id']) as p:
             settle(p, 'author_choice')
+        app.state.agents.last_research[self.p['id']] = ('prior instructions', time.monotonic())
         response=self.client.put(self.base+'/system-prompts',json={'prompts':[
             {'name':'Voice','text':'Prefer short sentences.'}]})
         self.assertEqual(response.status_code,200,response.text)
         updated=response.json()
+        self.assertNotIn(self.p['id'], app.state.agents.last_research)
         self.assertEqual(updated['draft'],before['draft'])
         self.assertEqual(updated['main_id'],before['main_id'])
         self.assertIsNone(updated['processing']['settled'])
