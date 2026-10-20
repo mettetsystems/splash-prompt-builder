@@ -96,7 +96,8 @@ def retrieve_context(project, query, limit=4):
     chunks = context_chunks(project)
     ranked = sorted(chunks, key=lambda c: sum(c["text"].casefold().count(t) for t in terms if len(t) > 2), reverse=True)
     selected = ranked[:limit]
-    return {"passages": selected, "total_passages": len(chunks), "excluded_passages": max(0, len(chunks)-len(selected))}
+    return {"passages": selected, "total_passages": len(chunks), "excluded_passages": max(0, len(chunks)-len(selected)),
+            "total_characters": sum(len(c['text']) for c in chunks)}
 
 
 def evidence(title, url, text, provider, level="abstract", **extras):

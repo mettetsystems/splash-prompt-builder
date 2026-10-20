@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { DraftBuffer, safeUrl, liveEnrichment } from '../src/client.js'
+import { DraftBuffer, safeUrl, liveEnrichment, commentSegments, codePointSelection, inputSelection, jobAcknowledgement } from '../src/client.js'
 
 test('typing during an autosave preserves newer text and serializes revisions', async () => {
   let release
@@ -59,5 +59,39 @@ test('stale, overlapping, or mismatched live edits cannot alter the preview', ()
   const edit = {id:'a', start:2, end:7, before:'small', after:'precise', version:2, rationale:'Language and instruction precision'}
   for (const edits of [[{...edit, version:1}], [{...edit, before:'wrong'}], [edit, {...edit, id:'b'}], [{...edit, end:50}]]) {
     assert.deepEqual(liveEnrichment(draft, edits), {text:draft.text, ids:[], version:2})
+  }
+})
+
+test('comment highlights preserve text and combine overlapping discussions',()=>{
+  const text='🌊 Use Python. Do not use Python.'
+  const comments=[
+    {id:'a',status:'open',kind:'conflict',anchors:[{quote:'Use Python.'},{quote:'Do not use Python.'}]},
+    {id:'b',status:'open',kind:'question',anchors:[{quote:'Do not use Python.'}]},
+    {id:'c',status:'resolved',kind:'note',anchors:[{quote:'🌊'}]},
+  ]
+  const parts=commentSegments(text,comments)
+  assert.equal(parts.map(p=>p.text).join(''),text)
+  assert.deepEqual(parts.at(-1).ids,['a','b'])
+  assert.equal(parts.at(-1).conflict,true)
+  assert.equal(parts[0].ids.length,0)
+  assert.deepEqual(commentSegments('Python Python',[{id:'x',status:'open',anchors:[{quote:'Python'}]}])[0].ids,[])
+})
+
+test('selected Unicode passages round-trip between browser and server offsets',()=>{
+  const text='🌊 研究 Python'
+  const selection=codePointSelection(text,6,12)
+  assert.deepEqual(selection,{start:5,end:11})
+  assert.deepEqual(inputSelection(text,selection),[6,12])
+})
+
+test('cached and settled requests finish immediately instead of leaving a running spinner',()=>{
+  assert.equal(jobAcknowledgement({status:'started'},3),null)
+  assert.equal(jobAcknowledgement({status:'already_running'},3),null)
+  for(const result of [{cached:true},{settled:true}]){
+    const job=jobAcknowledgement({status:'unchanged',reason:'Waiting for new input.',result},3)
+    assert.equal(job.status,'complete')
+    assert.equal(job.version,3)
+    assert.deepEqual(job.result,result)
+    assert.equal(job.reason,'Waiting for new input.')
   }
 })

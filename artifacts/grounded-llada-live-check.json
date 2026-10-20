@@ -1,0 +1,113 @@
+[
+  {
+    "case": {
+      "id": "grounded-website",
+      "agent": "splash-code",
+      "prompt": "Make the website faster. Do not change checkout behavior.",
+      "context": "The current priority is mobile product pages. The product page loads a 6 MB hero image before any text appears. Checkout runs on a separate service. We have no agreed latency target yet. Preserve the current React application."
+    },
+    "config": {
+      "model": "llada",
+      "path": "/home/ojoseph/.local/share/Splash/models/llada",
+      "source": "catalog",
+      "repo": "inclusionAI/LLaDA2.1-mini",
+      "revision": "20e64e2ad21644d0e5248586ed9c942cdd45de0f",
+      "device": "cuda:1",
+      "steps": 64,
+      "context": 32768,
+      "quantize": true,
+      "offload": false,
+      "gpu_memory": "6GiB",
+      "cpu_memory": "24GiB"
+    },
+    "job": {
+      "status": "complete",
+      "result": {
+        "proposals": [],
+        "suppressed_edits": 0,
+        "metrics": [
+          {
+            "ok": true,
+            "output_tokens": 133,
+            "max_output_tokens": 512,
+            "truncated": false,
+            "stop_reason": "message_end",
+            "latency_ms": 39234,
+            "input_tokens": 581,
+            "context_limit": 32768,
+            "quality_mode": "quality",
+            "schedule": {
+              "threshold": 0.7,
+              "editing_threshold": 0.5,
+              "max_post_steps": 16
+            },
+            "peak_vram_mb": 11428,
+            "section": 0,
+            "attempt": 1
+          },
+          {
+            "ok": true,
+            "output_tokens": 249,
+            "max_output_tokens": 512,
+            "truncated": false,
+            "stop_reason": "message_end",
+            "latency_ms": 66603,
+            "input_tokens": 629,
+            "context_limit": 32768,
+            "quality_mode": "quality",
+            "schedule": {
+              "threshold": 0.7,
+              "editing_threshold": 0.5,
+              "max_post_steps": 16
+            },
+            "peak_vram_mb": 11987,
+            "section": 0,
+            "attempt": 2
+          }
+        ],
+        "context": {
+          "ok": true,
+          "context_limit": 32768,
+          "output_budget": 512,
+          "retry_output_budget": 1024,
+          "reference_tokens": 129,
+          "input_tokens_max": 581,
+          "context_characters_used": 372,
+          "context_characters_excluded": 0,
+          "excluded_references": 0,
+          "total_passages": 1,
+          "used_passages": 1,
+          "excluded_passages": 0,
+          "uploaded_characters_used": 226,
+          "uploaded_characters_excluded": 0,
+          "sections": 1,
+          "checked_characters": 57,
+          "excluded_draft_characters": 0
+        },
+        "quality": {
+          "pipeline": 4,
+          "suggestions": 0,
+          "questions": 0,
+          "withheld": [],
+          "errors": [
+            "Return EDIT or QUESTION records ending in END, or NONE."
+          ],
+          "previous_preview_retained": true,
+          "invalid_response_samples": [
+            "REPLACE: Make the website faster. Do not change checkout behavior.  \nThis is a high-level improvement focused on performance, accessibility, and user experience.  \n\nKey points:  \n- Optimize hero image size (currently 6 MB) to reduce initial load time.  \n- Ensure core content loads before image assets.  \n- Maintain current checkout behavior to avoid user disruption.  \n- Avoid changes to existing React or structure during transition.  \n- Focus on improving user experience without altering core functionality.  \n- This is a non-breaking improvement, not a full rewrite.  \n\nOutcome:  \n- Faster initial load without changing user experience.  \n- No changes to existing structure or checkout behavior.  \n- Focus remains on core content and user experience.  \n- Suitable for students and general audiences.  \n\nNext steps:  \n- Optimize image size (currently 6 MB) to under 100 KB.  \n- Implement lazy loading for non-critical images.  \n- Ensure text content loads before large visual assets.  \n- Maintain current navigation and user flow.  \n\nLet me know if you'd like to refine this into a more structured task."
+          ],
+          "status": "needs_attention"
+        },
+        "errors": [
+          "Return EDIT or QUESTION records ending in END, or NONE."
+        ]
+      },
+      "finished": "2026-10-10T03:57:52.264309+00:00",
+      "version": 1
+    },
+    "comments": [],
+    "proposals": [],
+    "main_unchanged": true,
+    "draft_unchanged": true
+  }
+]

@@ -10,7 +10,7 @@ providers = Providers()
 @server.tool()
 async def search_context(project_id: str, query: str, limit: int = 4) -> dict:
     """Retrieve passages only from the host-scoped project."""
-    return retrieve_context(Store().get(project_id), query, max(1, min(limit, 5)))
+    return retrieve_context(Store().get(project_id), query, max(1, min(limit, 16)))
 
 
 @server.tool()

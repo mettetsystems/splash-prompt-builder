@@ -15,7 +15,7 @@ run: build
 	$(VENV_PYTHON) -m backend.app
 
 dev-backend:
-	$(VENV_PYTHON) -m uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload --ws-max-size 100000
+	$(VENV_PYTHON) -m uvicorn backend.app:app --host 127.0.0.1 --port 43827 --reload --ws-max-size 100000
 
 dev-frontend:
 	npm --prefix frontend run dev

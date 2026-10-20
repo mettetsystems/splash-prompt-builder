@@ -34,7 +34,7 @@ async def measure_latency(url: str, iterations: int = 25, threshold_ms: float = 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--url', default='ws://127.0.0.1:8000/ws')
+    parser.add_argument('--url', default='ws://127.0.0.1:43827/ws')
     parser.add_argument('--iterations', type=int, default=25)
     parser.add_argument('--threshold-ms', type=float, default=100)
     args = parser.parse_args()

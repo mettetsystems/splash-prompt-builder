@@ -4,6 +4,7 @@ import errno
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import subprocess
 import sys
@@ -33,7 +34,7 @@ def port_status(port):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=43827, help="Splash port (default: 43827)")
     parser.add_argument("--data-dir", type=Path, help="Override the platform app-data directory")
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
@@ -57,10 +58,25 @@ def main(argv=None):
     env = dict(os.environ)
     if args.data_dir:
         env["SPLASH_DATA_DIR"] = str(args.data_dir.expanduser().resolve())
+    options = {}
+    if sys.platform == "win32":
+        # A dedicated console group lets stop.py request graceful Uvicorn cleanup;
+        # TerminateProcess would bypass the application's shutdown handlers.
+        env["SPLASH_CONSOLE_GROUP"] = "1"
+        options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    process = subprocess.Popen([str(python), "-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1",
+        "--port", str(args.port), "--ws-max-size", "100000"], cwd=root, env=env, **options)
     try:
-        return subprocess.call([str(python), "-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1",
-            "--port", str(args.port), "--ws-max-size", "100000"], cwd=root, env=env)
+        return process.wait()
     except KeyboardInterrupt:
+        # POSIX terminals deliver Ctrl+C to both processes. Windows' separate
+        # group needs forwarding. Keep the launcher alive until cleanup finishes.
+        if sys.platform == "win32" and process.poll() is None:
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+        try:
+            process.wait()
+        except KeyboardInterrupt:
+            print("Shutdown is still in progress; check the server log before restarting.", file=sys.stderr)
         return 0
 
 

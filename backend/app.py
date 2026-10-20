@@ -194,4 +194,4 @@ app.mount("/assets", StaticFiles(directory=DIST / "assets", check_dir=False), na
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend.app:app", host="127.0.0.1", port=8000, ws_max_size=MAX_MESSAGE_BYTES)
+    uvicorn.run("backend.app:app", host="127.0.0.1", port=43827, ws_max_size=MAX_MESSAGE_BYTES)

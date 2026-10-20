@@ -13,6 +13,13 @@ export async function api(path, { method = 'GET', body, ...options } = {}) {
   return data
 }
 
+// A cached/settled response is a finished request, not a background job that
+// will eventually emit a completion event.
+export function jobAcknowledgement(response, version) {
+  if(response.status==='started'||response.status==='already_running')return null
+  return {status:'complete', version, result:response.result||{}, reason:response.reason}
+}
+
 // Serialize autosaves without blocking typing or overwriting newer local edits.
 export class DraftBuffer {
   constructor(draft, save, notify = () => {}, persist = () => {}) {
@@ -76,4 +83,30 @@ export function liveEnrichment(draft, proposals) {
     boundary = edit.start
   }
   return {text: result.join(''), ids: edits.map(edit => edit.id), version: draft.version}
+}
+
+export function commentSegments(text, comments) {
+  // Locate exact unique quotes in the live preview. If enrichment changed a
+  // passage, its thread still offers a link to the original input selection.
+  const ranges = comments.filter(c => c.status === 'open' && !c.outdated).flatMap(c =>
+    c.anchors.flatMap(a => {
+      const quote = c.kind==='suggestion' && c.replacement && text.includes(c.replacement) ? c.replacement : a.quote
+      const start = text.indexOf(quote)
+      return quote && start >= 0 && text.indexOf(quote, start + 1) < 0
+        ? [{start, end:start+quote.length, id:c.id, kind:c.kind}] : []
+    }))
+  const boundaries = [...new Set([0, text.length, ...ranges.flatMap(r=>[r.start,r.end])])].sort((a,b)=>a-b)
+  return boundaries.slice(0,-1).map((start,i) => {
+    const end = boundaries[i+1], active = ranges.filter(r=>r.start<=start && r.end>=end)
+    return {text:text.slice(start,end), ids:[...new Set(active.map(r=>r.id))], conflict:active.some(r=>r.kind==='conflict')}
+  })
+}
+
+export function codePointSelection(text, start, end) {
+  return {start:Array.from(text.slice(0,start)).length, end:Array.from(text.slice(0,end)).length}
+}
+
+export function inputSelection(text, anchor) {
+  const points = Array.from(text)
+  return [points.slice(0,anchor.start).join('').length, points.slice(0,anchor.end).join('').length]
 }

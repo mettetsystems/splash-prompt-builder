@@ -27,6 +27,37 @@ CATALOG = {
 }
 
 
+def decoded_generation(tokenizer, tokens, max_tokens):
+    eos = tokenizer.eos_token_id
+    eos_ids = eos if isinstance(eos, list) else [eos] if eos is not None else []
+    message_ends = []
+    # The bundled chat templates end assistant turns with these tokens, which
+    # are distinct from end-of-text. Do not decode a subsequent hallucinated
+    # turn or label a completed assistant message as a truncated response.
+    if hasattr(tokenizer, 'convert_tokens_to_ids') and hasattr(tokenizer, 'convert_ids_to_tokens'):
+        for marker in ('<|im_end|>', '<|role_end|>'):
+            token = tokenizer.convert_tokens_to_ids(marker)
+            if isinstance(token, int) and tokenizer.convert_ids_to_tokens(token) == marker:
+                message_ends.append(token)
+    stop = next((i for i, token in enumerate(tokens) if token in eos_ids + message_ends), None)
+    end_kind = 'message_end' if stop is not None and tokens[stop] in message_ends else 'eos'
+    generated = len(tokens)
+    if stop is not None:
+        tokens = tokens[:stop]
+    masked = getattr(tokenizer, 'mask_token_id', None) in tokens
+    truncated = masked or (stop is None and generated >= max_tokens)
+    return {'text': tokenizer.decode(tokens, skip_special_tokens=True).strip(), 'output_tokens': len(tokens),
+            'max_output_tokens': max_tokens, 'truncated': truncated,
+            'stop_reason': 'masked' if masked else end_kind if stop is not None else 'length' if truncated else 'stopped'}
+
+
+def generation_schedule(model, steps, max_tokens, quality_mode='quality'):
+    if model == 'llada':
+        return {'threshold': .7 if quality_mode == 'quality' else .5,
+                'editing_threshold': .5 if quality_mode == 'quality' else 0, 'max_post_steps': 16}
+    return {'steps': max(steps, (max_tokens + 1) // 2) if quality_mode == 'quality' else steps}
+
+
 def hardware():
     import psutil
     result = {"os": platform.system(), "machine": platform.machine(), "cpu": platform.processor() or platform.machine(),
@@ -71,6 +102,7 @@ class DiffusionAdapter:
         self.info = CATALOG[self.key]
         self.device = config.get("device", "cpu")
         self.steps = int(config.get("steps", 64))
+        self.quality_mode = config.get('quality_mode', 'quality')
         path = config["path"]
         self.context = min(int(config.get("context", self.info["context"])), self.info["context"])
         if self.device.startswith("cuda") and not torch.cuda.is_available():
@@ -119,6 +151,7 @@ class DiffusionAdapter:
         ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True,
                                             return_tensors="pt", enable_thinking=False).to(self.device)
         max_tokens = min(max_tokens, self.context // 2)
+        schedule = generation_schedule(self.key, self.steps, max_tokens, self.quality_mode)
         if ids.shape[1] + max_tokens > self.context:
             raise ValueError(f"Context budget exceeded: {ids.shape[1]} input + {max_tokens} output > {self.context}. Split the input or reduce context.")
         def check(*args):
@@ -130,7 +163,7 @@ class DiffusionAdapter:
             torch.cuda.reset_peak_memory_stats(self.device)
         with torch.inference_mode():
             if self.key == "dream":
-                output = model.diffusion_generate(ids, max_new_tokens=max_tokens, steps=self.steps, temperature=0,
+                output = model.diffusion_generate(ids, max_new_tokens=max_tokens, steps=schedule['steps'], temperature=0,
                     alg="entropy", generation_tokens_hook_func=check)
                 output = output[:, ids.shape[1]:]
             elif self.key == "llada":
@@ -138,7 +171,7 @@ class DiffusionAdapter:
                 hook = model.get_decoder().register_forward_pre_hook(lambda *_: check())
                 try:
                     output = model.generate(inputs=ids, gen_length=max_tokens, block_length=32,
-                        threshold=0.5, editing_threshold=0, temperature=0, eos_early_stop=True)
+                        **schedule, temperature=0, eos_early_stop=True)
                 finally:
                     hook.remove()
             else:
@@ -151,7 +184,7 @@ class DiffusionAdapter:
                 for block in range(blocks):
                     start = ids.shape[1] + block * block_size
                     end = min(start + block_size, output.shape[1])
-                    steps = min(end - start, max(1, self.steps // blocks))
+                    steps = min(end - start, max(1, schedule['steps'] // blocks))
                     for step in range(steps):
                         check()
                         logits = model(output, use_cache=False).logits[:, start:end, :].float()
@@ -166,13 +199,10 @@ class DiffusionAdapter:
                             output[:, start:end].scatter_(1, chosen, predicted.gather(1, chosen))
                 output = output[:, ids.shape[1]:]
         check()
-        tokens = output[0].tolist()
-        eos = tokenizer.eos_token_id
-        if eos is not None and eos in tokens:
-            tokens = tokens[:tokens.index(eos)]
-        text = tokenizer.decode(tokens, skip_special_tokens=True).strip()
-        return {"text": text, "latency_ms": round((time.perf_counter() - started) * 1000),
-                "input_tokens": ids.shape[1], "output_tokens": output.shape[1], "context_limit": self.context,
+        decoded = decoded_generation(tokenizer, output[0].tolist(), max_tokens)
+        return {**decoded, "latency_ms": round((time.perf_counter() - started) * 1000),
+                "input_tokens": ids.shape[1], "context_limit": self.context,
+                "quality_mode": self.quality_mode, "schedule": schedule,
                 "peak_vram_mb": round(torch.cuda.max_memory_allocated(self.device) / 2**20) if self.device.startswith("cuda") else None}
 
     def sections(self, text, system, suffix, max_tokens):
@@ -202,6 +232,10 @@ class DiffusionAdapter:
             sections.append({"text": text[offset:end], "start": offset, "end": end})
             offset = end
         return {"sections": sections, "input_budget": budget, "context_limit": self.context}
+
+    def plan_review(self, text, system, references):
+        from backend.enrichment import plan_review
+        return plan_review(self.tokenizer, self.context, text, system, references)
 
 
 def worker_main(inbox, outbox, cancel):
@@ -244,6 +278,10 @@ def run_worker(inbox, outbox, cancel):
                 if adapter is None:
                     raise RuntimeError("Load a diffusion model first.")
                 result = adapter.sections(job["text"], job["system"], job["suffix"], job["max_tokens"])
+            elif job["op"] == "plan_review":
+                if adapter is None:
+                    raise RuntimeError("Load a diffusion model first.")
+                result = adapter.plan_review(job["text"], job["system"], job["references"])
             else:
                 if adapter is None:
                     raise RuntimeError("Select and load a model in Model settings.")
@@ -337,10 +375,17 @@ class ModelService:
                 self.active_priority = 100
 
     async def sections(self, text, system, suffix="", max_tokens=256):
+        result = await self.plan({"op":"sections", "text":text, "system":system, "suffix":suffix, "max_tokens":max_tokens})
+        return result["sections"]
+
+    async def plan_review(self, text, system, references):
+        return await self.plan({"op":"plan_review", "text":text, "system":system, "references":references})
+
+    async def plan(self, payload):
         if self.status["state"] != "ready":
             raise RuntimeError("Load a diffusion model first.")
         async with self.lock:
-            task = asyncio.create_task(self.exchange({"op":"sections", "text":text, "system":system, "suffix":suffix, "max_tokens":max_tokens}))
+            task = asyncio.create_task(self.exchange(payload))
             try:
                 result = await asyncio.shield(task)
             except asyncio.CancelledError:
@@ -348,7 +393,7 @@ class ModelService:
                 raise
             if not result["ok"]:
                 raise RuntimeError(result["error"])
-            return result["sections"]
+            return result
 
     async def close(self):
         if self.closed:

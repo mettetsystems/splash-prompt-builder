@@ -1,0 +1,48 @@
+{
+  "job": {
+    "status": "complete",
+    "result": {
+      "comments_added": 1,
+      "review": {
+        "version": 1,
+        "created": "2026-10-07T11:45:56.094793+00:00",
+        "checked_characters": 172,
+        "excluded_characters": 0,
+        "errors": [],
+        "model": "dream"
+      },
+      "errors": []
+    },
+    "finished": "2026-10-07T11:45:56.102141+00:00"
+  },
+  "threads": [
+    {
+      "kind": "conflict",
+      "origin": "consistency",
+      "message": "One instruction requires this action and another prohibits it. Which direction should the prompt follow?",
+      "quotes": [
+        "Use Python.",
+        "Do not use Python."
+      ]
+    },
+    {
+      "kind": "conflict",
+      "origin": "consistency",
+      "message": "These passages give different values for \u2018budget\u2019. Are they alternatives or different contexts? Clarify which applies.",
+      "quotes": [
+        "The budget is $500.",
+        "The budget is $900."
+      ]
+    },
+    {
+      "kind": "conflict",
+      "origin": "review",
+      "message": "Should the app work offline or use an cloud API?6666",
+      "quotes": [
+        "It must work entirely offline.",
+        "Every user action must call an external cloud API."
+      ]
+    }
+  ],
+  "draft_unchanged": true
+}

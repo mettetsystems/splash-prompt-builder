@@ -12,7 +12,7 @@ This release includes real diffusion inference, a persistent MCP tool host, and 
 
 ## Start here
 
-You need **Python 3.11 or later**, **Node.js 22.12 or later with npm**, and a current browser. Setup installs the editor, builds the frontend, and checks the dependencies for your hardware. Add `--install-models` to install the matching model runtime too. Checkpoints remain separate, larger downloads.
+You need **Python 3.11 or later**, **Node.js 22.12 or later with npm**, and a current browser. Initial setup installs the editor, builds the frontend, and **installs PyTorch and the model adapters automatically** for the detected hardware. It verifies imports and a small device calculation before reporting success. Model-runtime packages can be large; an internet connection is required for packages not already cached. Model checkpoints remain separate downloads. Use `--profile editor` only if you intentionally want to skip local inference dependencies.
 
 From the repository directory on Linux or macOS:
 
@@ -28,15 +28,31 @@ py -3 scripts/setup.py --dev
 py -3 scripts/start.py
 ```
 
-Open **http://127.0.0.1:8000**. Stop a foreground server with Ctrl+C in the terminal that started it. The launcher checks the port first: if Splash is already running, it prints the existing URL and exits without starting another server or loading another model. No account or API key is required. Creating projects, editing, imports, history, and merges work before a model is installed. Enrichment and branches become available after a successful model load; there is no automatic mock fallback.
+Open **http://127.0.0.1:43827**. Stop a foreground server with Ctrl+C in the terminal that started it. The launcher checks the port first: if Splash is already running, it prints the existing URL and exits without starting another server or loading another model. No account or API key is required. Creating projects, editing, imports, history, and merges work before a model is installed. Enrichment and branches become available after a successful model load; there is no automatic mock fallback.
 
-If port 8000 is busy, choose another port. To keep this checkout's data in a specific directory:
+If port 43827 is busy, choose another port. To keep this checkout's data in a specific directory:
 
 ```sh
-python3 scripts/start.py --port 8001 --data-dir .local-data
+python3 scripts/start.py --port 43828 --data-dir .local-data
 ```
 
 On Windows, replace `python3` with `py -3`. These launchers always bind to loopback. Splash is a single-user local application, not an authenticated public service.
+
+### Stop Splash
+
+The default port is now **43827**. An instance already running on the previous default stays on port 8000 until restarted. Stop that instance with `python3 scripts/stop.py --port 8000`, then run `python3 scripts/start.py` and open `http://127.0.0.1:43827/`. Projects remain in the same application-data directory.
+
+Wait for the draft's saved indicator before stopping. Press **Ctrl+C** in the server terminal, or run the shutdown script from a second terminal:
+
+```sh
+python3 scripts/stop.py
+```
+
+On Windows, use `py -3 scripts/stop.py`. For a different port or a slower shutdown, use `python3 scripts/stop.py --port 43828 --timeout 60`.
+
+The script targets only your user account's Splash server from this checkout on the selected port. It requests graceful shutdown and waits for the server, inference worker, and tool processes to exit. Saved projects, drafts, and model downloads are preserved. If no matching server is found, it exits without stopping anything; it never kills unrelated Python processes or force-kills a slow shutdown. A timeout or permission failure returns a nonzero exit code and explains what remains pending. Closing a browser tab does not stop the server.
+
+Linux and macOS support the normal launcher and direct Uvicorn commands, including `--reload`. On Windows, start with the updated `scripts/start.py`; console-break delivery requires a shared console session. For servers in a separate Windows console, older launches, or direct Uvicorn launches, use Ctrl+C in the original terminal. Linux shutdown is tested; Windows console handling and macOS remain unverified on those platforms. The script uses the existing `psutil` dependency and falls back to the checkout's `.venv` if needed; it does not load model weights.
 
 ### Hardware profiles and dependency checks
 
@@ -47,13 +63,16 @@ Setup checks **the project's `.venv`**, even when another Python environment is 
 python3 scripts/setup.py --check
 
 # Install the editor and the runtime selected for this machine.
-python3 scripts/setup.py --install-models
+python3 scripts/setup.py
 
 # Fedora / GTX 1050: install the legacy NVIDIA runtime and check Compact capacity.
-python3 scripts/setup.py --profile nvidia-legacy --level compact --install-models
+python3 scripts/setup.py --profile nvidia-legacy --level compact
 
 # RTX 5090: include the NF4 dependency and check Extended capacity.
-python3 scripts/setup.py --profile nvidia --level extended --quantize --install-models
+python3 scripts/setup.py --profile nvidia --level extended --quantize
+
+# Explicitly opt out of PyTorch and model adapters (editor only).
+python3 scripts/setup.py --profile editor
 
 # Machine-readable diagnostics, or editor-only validation.
 python3 scripts/setup.py --check --json
@@ -73,7 +92,7 @@ The bundled NVIDIA installation profiles target Linux/Windows x86-64. Intel macO
 
 `--level compact`, `balanced`, and `extended` select the resource estimates for Qwen3 diffusion, Dream, and LLaDA. They do not select a model in the app or download weights. Add `--quantize` for the pinned bitsandbytes dependency on an NVIDIA profile. Memory/disk estimates are advisory; a passing runtime check is not a guarantee of model fit, speed, or quality. GTX 1050, Windows, and Metal model inference remain unverified on actual hardware.
 
-Normal editor setup can finish successfully while reporting missing model packages. `--check` returns exit code **1** for missing or incompatible required dependencies, and **0** when checks pass; use `--profile editor` when you intentionally do not want inference. `--install-models` also fails if the final model runtime/device check fails. A working PyTorch build is kept when it matches the selected profile; CPU checks can also use an existing CUDA build. Installing a different GPU profile can replace the PyTorch wheel inside `.venv`, so stop Splash first. Checkpoints and saved projects are preserved.
+Normal setup installs the selected runtime into the same `.venv` used by `scripts/start.py`. Missing PyTorch, failed imports, incompatible builds, or a failed final device check make setup exit with code **1**, rather than report a complete installation. `--check` remains read-only and returns **0** only when its checks pass. Use `--profile editor` to install or check only editor dependencies; this is also the supported setup path on platforms without a bundled model runtime. The older `--install-models` flag remains accepted for compatibility but is no longer necessary. A working PyTorch build is kept when it matches the selected profile; CPU checks can also use an existing CUDA build. Installing a different GPU profile can replace the PyTorch wheel inside `.venv`, so stop Splash first. Checkpoints and saved projects are preserved.
 
 ### Manual installation
 
@@ -101,7 +120,7 @@ The runtime dependencies, including the official `mcp==2.3.0` Python SDK, are pi
 
 ## Install and select a model
 
-The simplest path is `python3 scripts/setup.py --install-models` (see the profiles above). For manual installation, choose a PyTorch build appropriate to your operating system and GPU using the [official PyTorch installer](https://pytorch.org/get-started/locally/), then install the model adapters:
+The simplest path is `python3 scripts/setup.py`, which includes PyTorch automatically (see the profiles above). For manual installation, choose a PyTorch build appropriate to your operating system and GPU using the [official PyTorch installer](https://pytorch.org/get-started/locally/), then install the model adapters:
 
 ```sh
 .venv/bin/python -m pip install -r backend/requirements-models.txt
@@ -146,7 +165,7 @@ The candidate checkpoints contain custom model code, loaded locally with `trust_
 | Balanced | [Dream-v0-Instruct-7B](https://huggingface.co/Dream-org/Dream-v0-Instruct-7B) | `05334cb9faaf763692dcf9d8737c642be2b2a6ae` | 15 GB | 2,048 tokens |
 | Extended | [LLaDA2.1-mini](https://huggingface.co/inclusionAI/LLaDA2.1-mini) | `20e64e2ad21644d0e5248586ed9c942cdd45de0f` | 34 GB | 32,768 tokens |
 
-These are application ceilings, including instructions, input, context, and output reservation; they are not guarantees that the maximum fits every device. NF4 reduces runtime weight memory, not the source checkpoint download. The LLaDA adapter uses its native confidence-based block/editing schedule; the diffusion-steps control applies to Compact and Dream. Local compatibility changes are documented in [backend/vendor/NOTICE](backend/vendor/NOTICE).
+These are application ceilings, including instructions, input, context, and output reservation; they are not guarantees that the maximum fits every device. NF4 reduces runtime weight memory, not the source checkpoint download. The LLaDA adapter uses its native confidence-based block/editing schedule. **Generation mode → Quality** is the default: LLaDA uses confidence threshold 0.7, editing threshold 0.5, and 16 post-editing steps, following the pinned checkpoint guidance. **Speed** restores thresholds 0.5/0.0. For Dream and Compact, Quality treats the configured diffusion steps as a minimum and reserves at least one step per two output tokens; Speed uses the configured schedule. Actual schedule and token counts are recorded in generation metrics. Quality takes longer, and larger context/output budgets can increase peak memory. Existing configurations without this field use Quality after restart/reload; prior measurements below used the older schedule. Local compatibility changes are documented in [backend/vendor/NOTICE](backend/vendor/NOTICE).
 
 ## Choose an agent and create a project
 
@@ -160,7 +179,7 @@ Click **New prompt project**, choose an agent, and enter the initial prompt. A p
 
 The agent is fixed for the life of a project. Change the output style under **Context & sources** if you prefer prose. Use sidebar search and **Rename** to organize projects.
 
-Input can be multilingual. The model is instructed to enrich in English while retaining code, identifiers, quotations, references, numbers, and constraints. Unsupported details should become questions, not asserted requirements. Explicit English requirements such as “Preserve…”, “Do not…”, and “Use only…” are retained in a labeled constraints section when the rewrite does not retain their wording. Literal/code/number checks and a limited multilingual testing-requirement check reject some other lossy outputs. They do **not** prove complete semantic equivalence; examine negations, scope, and implied obligations in the review.
+Input can be multilingual. The model is instructed to enrich in English while retaining code, identifiers, quotations, references, numbers, and constraints. Unsupported details should become questions, not asserted requirements. Enrichment conservatively withholds edits that change recognized explicit English requirements such as “Preserve…”, “Do not…”, and “Use only…”. Branch synthesis retains omitted explicit requirements in a labeled constraints section. Literal/code/number checks and a limited multilingual testing-requirement check reject some other lossy outputs. They do **not** prove complete semantic equivalence; examine negations, scope, and implied obligations in the review.
 
 ### Imports and exports
 
@@ -175,9 +194,27 @@ For a full restore of the exact application state, back up the SQLite database a
 
 ## Drafts, suggestions, and explicit merges
 
-The **Working Draft** on the right is your editable input space. The **Main Prompt** pane on the left displays the live enriched output as a complete prompt, rather than a list of language-edit cards. Typing autosaves after a short pause. The left pane reflects your input while generation is pending and updates when the model finishes; its status distinguishes waiting, running, ready, and failed enrichment. Updates depend on your hardware's generation speed, rather than arriving on every keystroke. Live enrichment waits for idle input and adapts its delay to measured inference time; disable it for manual-only refinement.
+The **Working Draft** is your editable input space. The **Main Prompt** pane displays the live enriched output as a complete prompt. A **Document comments** rail sits beside the document; on narrower screens, the panes and rail stack vertically. Typing autosaves after a short pause. The main pane reflects your input while generation is pending and updates when the model finishes; its status distinguishes waiting, running, ready, and failed enrichment. Updates depend on your hardware's generation speed, rather than arriving on every keystroke. Disable live enrichment for manual-only refinement.
+
+**Automatic sampling waits for content.** Autosaving a keystroke does not send it to the model. Enrichment, comment review, and research all use the same boundary check:
+
+- A clause or sentence containing at least two words, ended with sentence punctuation, a comma/semicolon, or a newline, becomes eligible after **two seconds without editing**. For example, `Use Python.` or `The budget is $500;` qualifies.
+- Without punctuation, finish **at least six words followed by a space** and pause for **3.5 seconds**. The next sample needs six additional/changed words, not another space after each individual word. Common unfinished English endings such as “and,” “to,” and “the” keep waiting.
+- Partial words, one-word fragments, ongoing IME composition, unsaved edits, hidden tabs, and an open merge review hold automatic requests. The position being edited matters even inside an already long document. Unicode word segmentation and multilingual punctuation are supported. Pasting a paragraph of six or more words can count as a completed phrase without a trailing space.
+- Slower hardware can extend the enrichment pause to the most recent measured generation time. Comments and research run no more than once per ten seconds each, when eligible, and wait for foreground enrichment. Unchanged content is skipped.
+
+These are conservative boundary heuristics, not a grammatical parser or a guarantee that a statement is complete. **Refine entire prompt**, **Review document**, and manual research explicitly bypass the automatic boundary wait. The full saved draft remains the model's context; the app does not send isolated keystrokes or remove unfinished text from your saved draft.
 
 The live pane is a preview until you confirm a merge. Generation never replaces your input draft. **Copy live prompt** copies the enriched output; **Show saved main** displays the last confirmed main; **Discard enrichment** returns the preview to your draft. **Refine entire prompt** requests a fresh rewrite in the same pane. Stale results cannot apply to a newer draft, including input containing emoji or other multilingual text.
+
+**Processing and decisions are saved with the project.** Switching projects, refreshing the browser, reconnecting, or restarting Splash does not forget recently completed work. A SQLite ledger retains the most recent 128 attempts for each of enrichment, comment review, and research, identified by their input text and relevant model/context settings. Automatic requests reuse completed attempts; failed or interrupted attempts wait for new input or an explicit manual retry. A new model configuration or uploaded context can permit a fresh relevant pass. Generated previews, progress updates, and source timestamps do not trigger new cycles.
+
+- **Dismiss** or **Resolve** on a wording suggestion keeps your current wording, removes its edit from the live preview, and remembers that passage. **Discard enrichment** remembers all rejected edits in that preview. Dismissed research additions are remembered by their project source references.
+- **Apply to draft**, accepting research edits, a confirmed merge, or selecting a generated branch variant saves a checkpoint and waits for your next input. Splash does not automatically rewrite its own newly accepted output. Approved wording is protected against reversal during later enrichment.
+- Editing elsewhere preserves these choices as the passages move. Editing the chosen passage releases its protection. **Reopen** revisits a dismissed/resolved wording discussion; applied edits remain in history and can be revised in the Working Draft.
+- Manual **Refine entire prompt**, **Review document**, and research requests can rerun a completed input, while still respecting remembered wording choices. Recent resolved discussions and author replies also inform the reviewer. Matching and protection are based on anchored passages, not a guarantee of semantic equivalence across substantially rewritten text.
+
+This memory is project-local, included in JSON exports, and removed when its project is deleted. Importing into a new project starts independent processing and decision history. Existing valid dismissed/resolved suggestions are migrated into decision memory; earlier accepted wording is recovered where its replacement can be uniquely located. Existing prompt text and main history are preserved.
 
 For coding and research projects, evidence-based additions remain under **Research suggestions**, with rationale, supporting passages, source links, and evidence levels. **Accept edit** or **Accept all research** explicitly adds those suggestions to your input draft; **Dismiss** rejects them. They are never silently included in the live language rewrite.
 
@@ -189,6 +226,27 @@ Merge is always two stages:
 **Keep editing**, Escape, or closing the review leaves the main and input unchanged. Any intervening draft, main revision, or reviewed enrichment change invalidates confirmation. Retrying the same successful confirmation returns the existing result rather than creating another main revision. Tab is ordinary keyboard navigation; it never promotes a prompt.
 
 Example: begin with “Explain caching.” Add “Include two concrete examples” to your working draft. Watch the enriched wording appear in the main pane, then review and confirm to create main version 2. If that version drifts from your intent, open version 1 in **Version history** and choose **Restore as draft**. Edit or promote it through the same review flow. Version 2 remains available.
+
+### A local collaborative document: you and the AI
+
+Splash's collaboration is between **you and the local AI reviewer**. Projects, discussion threads, and model inference remain on this computer. This release does not provide shared accounts, remote collaborators, network synchronization, or simultaneous multi-user editing.
+
+- **Several comments at once:** the agent can suggest wording, ask clarification questions, or identify competing instructions. Live enrichment proposes focused edits or clarification questions, each with an exact passage and a specific explanation. Cited context appears under **Supporting context**, with verified quotations and page/source references. AI review can add several questions or conflict comments in one pass.
+- **Anchored discussions:** highlighted passages in the main preview open their comments. Click a quoted passage in a comment to select it in the Working Draft. A changed phrase may no longer appear verbatim in the live preview; its comment still links to the input it describes.
+- **Your comments and replies:** select text in the Working Draft, write a note under **Add your comment**, and submit it. Reply within any open thread. **Ask AI to respond** requests a model response to that discussion; replying by itself saves your message without starting inference.
+- **Explicit edits:** **Apply to draft** applies only that suggestion and preserves the preceding draft for recovery. It never changes the saved main. Conflicts and questions have no automatic Apply action: the author decides which facts or requirements are intended.
+- **Resolve, dismiss, and reopen:** resolved/dismissed discussions remain in **All discussions** and can be reopened. Applied suggestions stay in discussion history. Background reviews preserve replies and do not reopen an unchanged resolved issue.
+- **Revision safety:** unchanged passages keep their comments when surrounding text moves. Editing an anchored passage marks the old thread **Passage changed** and disables its edit; the discussion remains readable. Stale edits and comments belonging to another project cannot modify the current draft.
+
+**Automatic review** samples eligible clauses and phrases in the saved active draft at most every ten seconds and skips unchanged completed reviews. **Review document** requests a fresh pass immediately. Review shares the existing diffusion worker at lower priority than live enrichment, so typing and foreground generation take precedence. Each AI pass covers up to four model-sized sections, adds at most twelve model review comments, and shows excluded characters. Enrichment edits and questions together are limited to eight per pass. A newer completed enrichment pass retires superseded open suggestions while preserving their discussion history. These comment limits are separate from the five-card research-branch limit.
+
+Local English consistency checks can flag explicit positive/negative commands, conflicting values for the same stated subject, and incompatible word-count ranges. They are labeled **Consistency check**, not presented as model reasoning. For example, “Use Python. Do not use Python. The budget is $500. The budget is $900.” creates separate conflict discussions quoting both sides. A broader model pass looks for semantic conflicts and ambiguity; it must return validated, exact passage references. Invalid model output gets one repair attempt, then a visible unavailable-review notice. No checker guarantees that every contradiction is detected, and different contexts can make apparently competing statements compatible.
+
+Open, current conflict comments pause automatic rewriting so the agent does not silently choose one of the directions. Clarify the working draft and resolve the discussion when satisfied. A merge review shows an additional reminder if conflicts remain; you retain control over promoting a deliberately unresolved prompt.
+
+Comments are stored with each project in SQLite and included in a complete JSON export. Importing a prompt as a new independent project starts a fresh discussion history; it does not bring over the source project's comment threads.
+
+The [local Dream review check](artifacts/comment-workspace-check.json) produced an anchored offline-versus-cloud conflict in addition to the two local consistency findings, while preserving the input draft. It also illustrates remaining model quality limitations: generated comments can have awkward wording or trailing artifacts. AI review can miss contradictions or incorrectly flag compatible goals; dismiss an incorrect comment to resume enrichment. The reviewer does not establish which user-provided fact is true.
 
 ### Recovery and concurrent editing
 
@@ -215,7 +273,13 @@ Branch creation, selection, and synthesis never merge a main automatically. The 
 
 PDF page numbers, document names, and extracted passages are retained. **The stored attachment is extracted text with page references, not the original PDF binary or its layout.** Keep the original file separately. OCR, image interpretation, encrypted/image-only PDFs, and automatic repository inspection are outside this release.
 
-Retrieval is local lexical passage ranking. Enrichment currently supplies at most one relevant 350-character excerpt to leave room on the smallest model profile. The UI reports excluded passages/characters and processed prompt sections; accepted context-based edits retain their passage and page provenance. Long prompts are split using the selected model's actual tokenizer without dropping input characters. Each section carries a short main-objective reminder. This preserves access to long input but cannot ensure global semantic consistency across sections.
+Retrieval is local lexical passage ranking across the current draft. Enrichment retrieves up to **16 project passages**, then uses the loaded model's actual tokenizer and chat template to pack references within the configured context limit. Reference material can occupy up to **4,096 tokens**, with space reserved for instructions, the draft, output, and one repair attempt. The planner includes explicit draft requirements, prior author decisions, current objective excerpts, uploaded passages, accepted evidence, and historical main context as space allows. When evidence exists, at least two thirds of the reference allowance is available to it. Historical main text cannot override the current draft. Small profiles may fit very little context; the planner never silently raises the selected model's context ceiling.
+
+**Adaptive output budgets** replace the fixed 256-token enrichment limit. The requested budget is 512 tokens for drafts up to 128 input tokens, 1,024 up to 512, 2,048 up to 1,536, and 4,096 for longer input. The actual budget is reduced to fit the selected context and instructions. A truncated response gets one retry with a larger reserved budget when space permits, up to 4,096; a formatting repair uses the original budget. End-of-text, assistant-turn boundaries from the bundled chat templates, and remaining diffusion masks are checked, so an incomplete response is withheld and a generated following turn is not treated as part of the suggestion. These budgets are response ceilings, not promises of output length, memory fit, or latency. Branch generation, synthesis, research planning, and comment replies retain their separate budgets.
+
+Long drafts are split at exact character boundaries using token counts, with all input preserved. Each section receives the selected references. This is a bounded context view and does not establish global semantic consistency. The persisted **Enrichment review** below the editor reports the context limit, input/output allowances, used/excluded uploaded material, draft coverage, and reasons suggestions were withheld; it survives reloads.
+
+The model is given a worked format example and asked to consider objectives, audience, deliverables, constraints, and missing information silently, then return up to two short anchored EDIT/QUESTION records per section (strict JSON is also accepted). Replacements are requested at up to 80 words and rationales at one sentence; these are generation instructions, not a semantic quality guarantee. Edits need a specific rationale; uncertain requirements become questions without changing the live prompt. No-change output is valid. The host verifies unique exact anchors, nonoverlapping edits, evidence IDs/quotations, known protected literals, and explicit English requirements. Unsupported numeric targets, URLs, code literals, and some new obligations are withheld. Existing author decisions still take precedence. A malformed or truncated pass gets at most one repair per section; if it remains invalid, the previous valid preview is preserved with an explanation. No deterministic check proves full semantic faithfulness or factual support—review the reasoning before applying an edit.
 
 ### MCP architecture and permissions
 
@@ -277,6 +341,9 @@ Raw outputs and metrics:
 - [Five-branch LLaDA synthesis audit](artifacts/branch-synthesis-evaluation.json), including the consent omission that prompted the constraint-retention safeguard
 - [Eight-case enrichment audit](artifacts/enrichment-evaluation.json), including English, Spanish, French, German, Chinese, and Arabic
 - [Live research-provider checks](artifacts/provider-check.json)
+- [Grounded LLaDA review check](artifacts/grounded-llada-live-check.json), using the expanded-context pipeline and Quality mode on October 10, 2026
+
+The newer grounded-review check on RTX 5090 produced **zero accepted suggestions**. LLaDA used the uploaded website brief, but failed the requested edit format on both attempts and introduced an unsupported “under 100 KB” image target. The format validator withheld the response, leaving the main and working draft unchanged. The two generations took 39.2 and 66.6 seconds (105.8 seconds combined), with peak allocated VRAM of approximately 11,987 MiB. This is one case, not a benchmark; it demonstrates that more context and larger budgets do not by themselves resolve this checkpoint's instruction-following problems. Inspect withheld output in **Enrichment review**. Reliable grounded suggestions still require model and harness qualification.
 
 The multilingual audit found useful English rewrites but also a dropped French testing requirement, awkward repetition, and limited research expansion. The new constraint guard catches that particular testing omission; general semantic fidelity and graduate-level quality remain review responsibilities. Compact often answers the task instead of improving the instruction. Longer outputs can end at the token limit. No model is represented as fully quality-qualified.
 
@@ -303,7 +370,7 @@ For a complete backup, stop Splash cleanly and copy its data directory (or use S
 In separate terminals:
 
 ```sh
-.venv/bin/python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload --ws-max-size 100000
+.venv/bin/python -m uvicorn backend.app:app --host 127.0.0.1 --port 43827 --reload --ws-max-size 100000
 npm --prefix frontend run dev
 ```
 
@@ -329,11 +396,17 @@ To repeat actual model qualification, allowing checkpoint downloads only when re
 .venv/bin/python scripts/qualify_models.py --models llada --devices cuda:1 --quantize --output artifacts/llada-qualification.json
 ```
 
-Inspect your device indices first. The qualification script uses repository-local `.models/`; the app's download button uses its app-data directory. Point the model dialog at `.models/<model>` to reuse script downloads. `scripts/evaluate_enrichment.py` is the small Dream/RTX-5090 quality audit; adjust its explicit device configuration before running elsewhere.
+Inspect your device indices first. The qualification script uses repository-local `.models/`; the app's download button uses its app-data directory. Point the model dialog at `.models/<model>` to reuse script downloads. `scripts/evaluate_enrichment.py` now runs the repeatable cases in `tests/fixtures/enrichment_cases.json` through the grounded enrichment path, in a temporary store. It never changes user projects or downloads weights. Choose an existing checkpoint and a free device explicitly:
+
+```sh
+.venv/bin/python scripts/evaluate_enrichment.py --model llada --path .models/llada --device cuda:1 --context 32768 --quantize --output artifacts/llada-grounded-review.json
+```
+
+Use `--model dream --path .models/dream --context 2048` for Dream; choose the appropriate device. `--limit 3` runs a quick subset. `--quality-mode speed` records the faster schedule. `--baseline` also records the former 256-token rewrite request for human comparison, using the selected generation schedule. Results retain raw responses, exact proposals, evidence, token/latency/memory metrics, and unchanged-main/draft checks. Human usefulness and semantic-fidelity ratings are intentionally left blank; literal checks are not quality scores. Use separate output files for each configuration and compare the same cases. Exit status 1 flags a runtime or unrepaired format failure; status 0 does not certify useful suggestions. The earlier eight-case multilingual artifact remains a historical audit.
 
 ### Application interfaces
 
-Interactive HTTP documentation is available at **http://127.0.0.1:8000/docs**. Principal endpoints:
+Interactive HTTP documentation is available at **http://127.0.0.1:43827/docs**. Principal endpoints:
 
 | Route under `/api` | Action |
 |---|---|
@@ -342,6 +415,8 @@ Interactive HTTP documentation is available at **http://127.0.0.1:8000/docs**. P
 | `/projects/{id}/draft` | Save with `expected_version` |
 | `/projects/{id}/merge-review` | Capture the exact main/draft comparison |
 | `/projects/{id}/merge/{review_id}` | Confirm idempotently, or cancel with DELETE |
+| `/projects/{id}/comments`, `/comments/{comment_id}/reply`, `/comments/{comment_id}` | Create an anchored discussion, reply, resolve/dismiss/reopen |
+| `/projects/{id}/comments/review`, `/comments/{comment_id}/ask`, `/comments/{comment_id}/apply` | Review the document, request an AI reply, or explicitly apply a suggested edit |
 | `/projects/{id}/restore` | Restore a revision as a draft |
 | `/projects/{id}/compare/{revision_id}` | Compare a saved revision to the current main |
 | `/projects/{id}/documents` | Upload context |
@@ -361,6 +436,8 @@ The earlier deterministic mock remains isolated in `backend/engine.py` and legac
 - `backend/api.py`: project/model HTTP APIs and scoped WebSocket events.
 - `backend/models.py`: hardware inspection, adapters, and persistent inference process.
 - `backend/checkpoints.py`: compatible local checkpoint checks, Hugging Face revision resolution, and resumable downloads.
+- `backend/comments.py`: anchored discussions, conservative consistency checks, model review validation, and revision-safe suggestion application.
+- `backend/state.py`: persistent processing checkpoints, remembered edit decisions, and protection against repeated or reversed suggestions.
 - `scripts/setup.py`, `scripts/dependencies.py`: hardware-specific dependency installation and isolated runtime checks.
 - `backend/agents.py`: policies, proposals, branches, synthesis, and research scheduling.
 - `backend/mcp_host.py`, `mcp_server.py`, `research.py`: shared MCP lifecycle, permissions, local retrieval, and public providers.
@@ -374,8 +451,8 @@ The earlier deterministic mock remains isolated in `backend/engine.py` and legac
 | Symptom | What to do |
 |---|---|
 | Model controls say no model is ready | Install PyTorch/model requirements, download or select a checkpoint, then load it. Editing/history remain available. |
-| `address already in use` on port 8000 | Splash may already be running. Open `http://127.0.0.1:8000/`; the updated `scripts/start.py` detects an existing instance before loading weights. To restart, stop the process that owns that port first. Do not launch several instances against the same GPU. |
-| `ModuleNotFoundError: No module named 'torch'` | Run `python3 scripts/setup.py --install-models` from the project directory. On GTX 1050 use `--profile nvidia-legacy --level compact`. Restart using `scripts/start.py` so Splash uses the same `.venv` that was checked. |
+| `address already in use` on port 43827 | Splash may already be running. Open `http://127.0.0.1:43827/`; the updated `scripts/start.py` detects an existing instance before loading weights. To restart this checkout's server, run `python3 scripts/stop.py` first. Do not launch several instances against the same GPU. |
+| `ModuleNotFoundError: No module named 'torch'` | Run `python3 scripts/setup.py` from the project directory; PyTorch is now included by default. On GTX 1050 use `--profile nvidia-legacy --level compact`. Resolve any failed setup checks, then restart using `scripts/start.py` so Splash uses the same `.venv` that was checked. |
 | GPU selector shows less memory than the card's advertised capacity | The first value is **free** VRAM and the second is **total** VRAM. Loaded models, runtime caches, and other GPU programs reduce free memory. Use `nvidia-smi` to inspect current processes. |
 | Hub download fails or says access denied | Check the repository ID/revision, connection, and local Hub login or `HF_TOKEN`. Gated repositories require prior access. Retry the download to reuse partial files. |
 | Checkpoint check reports wrong architecture or LFS pointers | Choose the matching adapter and a complete weights directory. Pull Git LFS weights or download through Hugging Face. A Git source repository alone is not a model checkpoint. |
@@ -390,6 +467,6 @@ The earlier deterministic mock remains isolated in `backend/engine.py` and legac
 | PDF yields no text | Use a text-based PDF or paste a transcription; OCR is outside scope. |
 | UI shows old content or is not built | Run `npm --prefix frontend run build`, then reload. Restart the backend after backend changes. |
 | Tests hang in a restricted sandbox | Run in a normal local terminal with loopback socket access. In-process WebSocket tests still need event-loop socket facilities. |
-| Port already in use | Start with `python3 scripts/start.py --port 8001` or stop your previous Splash instance. |
+| Port already in use | Start with `python3 scripts/start.py --port 43828` or stop your previous Splash instance. |
 
 Custom training, stronger multilingual/constraint evaluation, certified GTX 1050/Windows/Metal profiles, richer retrieval, cloud synchronization, native desktop packaging, arbitrary external MCP servers, and autonomous code execution are future work. See [MODEL_ROADMAP.md](MODEL_ROADMAP.md) for the remaining model-specific work.

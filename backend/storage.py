@@ -72,6 +72,10 @@ class Store:
             if not row:
                 raise KeyError("Project not found")
             project = json.loads(row[0])
+            project.setdefault("comments", [])
+            project.setdefault("comment_review", None)
+            from backend.state import initialize
+            initialize(project)
             yield project
             project["updated"] = now()
             db.execute("UPDATE projects SET body=? WHERE id=?", (json.dumps(project), project_id))
@@ -81,7 +85,12 @@ class Store:
             row = db.execute("SELECT body FROM projects WHERE id=?", (project_id,)).fetchone()
         if not row:
             raise KeyError("Project not found")
-        return json.loads(row[0])
+        project = json.loads(row[0])
+        project.setdefault("comments", [])
+        project.setdefault("comment_review", None)
+        from backend.state import initialize
+        initialize(project)
+        return project
 
     def list(self, query=""):
         with self.connect() as db:
@@ -110,7 +119,8 @@ class Store:
                    "draft": draft, "revisions": [first], "origin": origin,
                    "documents": copy.deepcopy(imported["documents"]) if imported else [],
                    "sources": copy.deepcopy(imported["sources"]) if imported else [],
-                   "branches": [], "proposals": [], "reviews": [], "queries": [],
+                   "branches": [], "proposals": [], "reviews": [], "queries": [], "comments": [], "comment_review": None,
+                   "processing": {"runs": {}, "settled": None}, "edit_decisions": [],
                    "settings": {"research": False, "scholar": False, "branch_count": 3,
                                 "output": "prose" if agent == "splash" else "structured"}}
         with self.connect() as db:
@@ -138,6 +148,10 @@ class Store:
         p["draft"] = revision(text, "draft", old["sources"] if sources is None else sources,
                               metadata or {"base_main": p["main_id"], "prior_draft":old["id"]})
         p["draft"]["version"] = old["version"] + 1
+        from backend.comments import reanchor_threads
+        reanchor_threads(p, old["text"], text, p["draft"]["version"])
+        from backend.state import reanchor_decisions
+        reanchor_decisions(p, old["text"], text)
         # Proposals always belong to exactly one input revision.
         p["proposals"] = []
 
@@ -195,7 +209,11 @@ class Store:
             p["revisions"].append(new)
             p["main_id"] = new["id"]
             review["result_id"] = new["id"]
+            from backend.state import accept_edits, settle, mark_accepted_threads
+            mark_accepted_threads(p, selected)
             self.replace_draft(p, new["text"], copy.deepcopy(new["sources"]))
+            accept_edits(p, selected)
+            settle(p, 'confirmed_main')
         return p
 
     def delete(self, pid):

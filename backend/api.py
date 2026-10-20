@@ -13,6 +13,8 @@ from backend.models import CATALOG, hardware
 from backend.agents import apply_proposals
 from backend.research import parse_document
 from backend.checkpoints import dependency_status, source_spec, inspect_local, inspect_remote, fetch_checkpoint, downloaded_source
+from backend.comments import anchor, thread, get_thread, apply_suggestion, review_document, answer_comment, add_threads, consistency_comments
+from backend.state import input_key, claim, finish, interrupted, reject_edits, accept_edits, comment_edit, overlaps, mark_accepted_threads
 
 router = APIRouter(prefix="/api")
 MAX_TEXT = 80_000
@@ -61,6 +63,20 @@ class MergeReview(Version):
     proposal_ids: list[str] = Field(default_factory=list, max_length=10000)
 
 
+class CommentCreate(Version):
+    text: str = Field(min_length=1, max_length=4000)
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+
+
+class CommentReply(Input):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class CommentStatus(Input):
+    status: Literal["open", "resolved", "dismissed"]
+
+
 class Refine(Version):
     focus: int | None = Field(default=None, ge=0)
 
@@ -81,6 +97,7 @@ class LoadModel(Input):
     revision: str = Field(default="", max_length=200)
     device: str = Field(default="cpu", pattern=r"^(cpu|mps|cuda:[0-9]+)$")
     steps: int = Field(default=64, ge=16, le=512)
+    quality_mode: Literal['quality', 'speed'] = 'quality'
     context: int | None = Field(default=None, ge=512, le=32768)
     quantize: bool = False
     offload: bool = False
@@ -171,9 +188,8 @@ async def delete_project(pid: str, request: Request):
 @router.put("/projects/{pid}/draft")
 async def save_draft(pid: str, data: Draft, request: Request):
     state = services(request)
-    for kind in ("refine", "research", "branches", "synthesize"):
-        task = state.jobs.get((pid, kind))
-        if task:
+    for (project_id, kind), task in list(state.jobs.items()):
+        if project_id == pid:
             task.cancel()
     return await changed(state, state.store.save_draft(pid, data.text, data.expected_version))
 
@@ -315,7 +331,9 @@ async def accept_proposals(pid: str, data: Selection, request: Request):
         if len(text) > MAX_TEXT:
             raise ValueError("Accepted draft would exceed 80,000 characters.")
         accepted = [c for c in old_proposals if c["id"] in data.ids]
+        mark_accepted_threads(p, accepted)
         state.store.replace_draft(p, text, sources, {"base_main":p["main_id"], "prior_draft":p["draft"]["id"], "accepted_edits":accepted})
+        accept_edits(p, accepted)
         for change in old_proposals:
             if change["id"] in data.ids:
                 continue
@@ -333,8 +351,89 @@ async def reject_proposals(pid: str, data: Selection, request: Request):
     state = services(request)
     with state.store.edit(pid) as p:
         state.store.check_version(p, data.expected_version)
-        p["proposals"] = [s for s in p["proposals"] if s["id"] not in data.ids]
+        rejected = [s for s in p['proposals'] if s['id'] in data.ids]
+        if len(rejected) != len(set(data.ids)):
+            raise Conflict('Select current proposals to dismiss.')
+        reject_edits(p, rejected)
     return await changed(state, p)
+
+
+@router.post("/projects/{pid}/comments")
+async def create_comment(pid: str, data: CommentCreate, request: Request):
+    state = services(request)
+    if not data.text.strip() or data.start == data.end:
+        raise ValueError("Select a passage and write a comment.")
+    with state.store.edit(pid) as p:
+        state.store.check_version(p, data.expected_version)
+        p["comments"].append(thread("note", data.text.strip(), [anchor(p['draft']['text'], data.start, data.end, data.expected_version)], author="you", origin="user"))
+    return await changed(state, p)
+
+
+@router.post("/projects/{pid}/comments/{comment_id}/reply")
+async def reply_comment(pid: str, comment_id: str, data: CommentReply, request: Request):
+    if not data.text.strip():
+        raise ValueError("Write a reply first.")
+    state = services(request)
+    with state.store.edit(pid) as p:
+        comment = get_thread(p, comment_id)
+        comment['messages'].append({"id":uid(), "author":"you", "text":data.text.strip(), "created":now()})
+        comment['updated'] = now()
+    return await changed(state, p)
+
+
+@router.patch("/projects/{pid}/comments/{comment_id}")
+async def resolve_comment(pid: str, comment_id: str, data: CommentStatus, request: Request):
+    state = services(request)
+    with state.store.edit(pid) as p:
+        comment = get_thread(p, comment_id)
+        if comment['status'] == 'accepted':
+            raise ValueError("Applied edits stay in discussion history. Start a new comment to revisit the wording.")
+        if comment['kind']=='suggestion' and not comment['outdated']:
+            edit = comment_edit(comment)
+            if data.status in ('resolved','dismissed'):
+                reject_edits(p, [edit], data.status, comment_id)
+            elif data.status=='open':
+                for d in p['edit_decisions']:
+                    if d['status']!='accepted' and (d.get('comment_id')==comment_id or overlaps(d, edit)):
+                        d['active']=False
+        comment['status'], comment['updated'] = data.status, now()
+    return await changed(state, p)
+
+
+@router.post("/projects/{pid}/comments/{comment_id}/apply")
+async def accept_comment(pid: str, comment_id: str, data: Version, request: Request):
+    state = services(request)
+    with state.store.edit(pid) as p:
+        state.store.check_version(p, data.expected_version)
+        comment = get_thread(p, comment_id)
+        text = apply_suggestion(p, comment)
+        edit = comment_edit(comment)
+        comment['status'], comment['updated'] = 'accepted', now()
+        state.store.replace_draft(p, text, list(dict.fromkeys(p['draft']['sources'] + comment['sources'])),
+            {'comment_id':comment_id, 'prior_draft':p['draft']['id'], 'accepted_edits':[copy.deepcopy(comment)]})
+        accept_edits(p, [edit])
+    return await changed(state, p)
+
+
+@router.post("/projects/{pid}/comments/review")
+async def review_comments(pid: str, data: Version, request: Request, force: bool = False):
+    state = services(request)
+    p = state.store.get(pid)
+    state.store.check_version(p, data.expected_version)
+    return await launch(state, pid, 'comments', review_document(state.agents, pid, data.expected_version), expected=data.expected_version, force=force)
+
+
+@router.post("/projects/{pid}/comments/{comment_id}/ask")
+async def ask_comment(pid: str, comment_id: str, data: Version, request: Request):
+    state = services(request)
+    p = state.store.get(pid)
+    state.store.check_version(p, data.expected_version)
+    comment = get_thread(p, comment_id)
+    if comment['status'] != 'open' or comment['outdated']:
+        raise ValueError("Reopen a current discussion before asking the reviewer.")
+    if state.models.status['state'] != 'ready':
+        raise ValueError("Load a model to ask the reviewer. Your comment is saved locally.")
+    return await launch(state, pid, 'comment_reply', answer_comment(state.agents, pid, comment_id, comment['messages'][-1]['id']))
 
 
 @router.post("/projects/{pid}/branches/select")
@@ -349,40 +448,76 @@ async def select_branches(pid: str, data: Selection, request: Request):
     return await changed(state, p)
 
 
-async def launch(state, pid, kind, operation):
+async def launch(state, pid, kind, operation, *, expected=None, force=False, focus=None):
     current = state.jobs.get((pid, kind))
     if current and not current.done():
         operation.close()
         return {"status": "already_running"}
+    run_id = None
+    if expected is not None:
+        try:
+            with state.store.edit(pid) as p:
+                state.store.check_version(p, expected)
+                run_id, response = claim(p, kind, input_key(p, kind, state.models.status, focus), force)
+            if response:
+                operation.close()
+                return response
+        except Exception:
+            operation.close()
+            raise
+    def checkpoint(status, result=None, error=None):
+        if run_id:
+            try:
+                with state.store.edit(pid) as p:
+                    finish(p, kind, run_id, status, result, error)
+            except KeyError:
+                pass  # The user deleted the project while this job was running.
     async def run():
-        await publish(state, pid, "progress", job=kind, status="running")
+        await publish(state, pid, "progress", job=kind, status="running", draft_version=expected)
         try:
             async with asyncio.timeout(120 if kind == "research" else 600):
                 result = await operation
-            state.job_results[(pid, kind)] = {"status": "complete", "result": result, "finished": now()}
-            await publish(state, pid, "job_complete", job=kind, result=result)
+            checkpoint('complete', result)
+            state.job_results[(pid, kind)] = {"status": "complete", "result": result, "finished": now(), 'version':expected}
+            await publish(state, pid, "job_complete", job=kind, result=result, draft_version=expected)
         except asyncio.CancelledError:
-            state.job_results[(pid, kind)] = {"status": "canceled"}
-            await publish(state, pid, "job_canceled", job=kind)
+            checkpoint('canceled')
+            state.job_results[(pid, kind)] = {"status": "canceled", 'version':expected}
+            await publish(state, pid, "job_canceled", job=kind, draft_version=expected)
             raise
+        except (InterruptedError, Conflict):
+            checkpoint('canceled')
+            state.job_results[(pid, kind)] = {"status": "canceled", 'version':expected}
+            await publish(state, pid, "job_canceled", job=kind, draft_version=expected)
         except TimeoutError:
             message = "This task reached its time limit. The main prompt is unchanged; try a smaller scope or a faster profile."
-            state.job_results[(pid, kind)] = {"status": "error", "error": message}
-            await publish(state, pid, "job_error", job=kind, message=message)
+            checkpoint('error', error=message)
+            state.job_results[(pid, kind)] = {"status": "error", "error": message, 'version':expected}
+            await publish(state, pid, "job_error", job=kind, message=message, draft_version=expected)
         except Exception as exc:
-            state.job_results[(pid, kind)] = {"status": "error", "error": str(exc)}
-            await publish(state, pid, "job_error", job=kind, message=str(exc))
+            checkpoint('error', error=str(exc))
+            state.job_results[(pid, kind)] = {"status": "error", "error": str(exc), 'version':expected}
+            await publish(state, pid, "job_error", job=kind, message=str(exc), draft_version=expected)
         finally:
-            state.jobs.pop((pid, kind), None)
+            operation.close()
+            if state.jobs.get((pid, kind)) is asyncio.current_task():
+                state.jobs.pop((pid, kind), None)
     state.jobs[(pid, kind)] = asyncio.create_task(run())
+    def canceled_before_start(task):
+        if task.cancelled():
+            checkpoint('canceled')
+            operation.close()
+        if state.jobs.get((pid, kind)) is task and task.done():
+            state.jobs.pop((pid, kind), None)
+    state.jobs[(pid, kind)].add_done_callback(canceled_before_start)
     return {"status": "started"}
 
 
 @router.post("/projects/{pid}/refine")
-async def refine(pid: str, data: Refine, request: Request):
+async def refine(pid: str, data: Refine, request: Request, force: bool = False):
     state = services(request)
     state.store.check_version(state.store.get(pid), data.expected_version)
-    return await launch(state, pid, "refine", state.agents.enrich(pid, data.expected_version, data.focus))
+    return await launch(state, pid, "refine", state.agents.enrich(pid, data.expected_version, data.focus), expected=data.expected_version, force=force, focus=data.focus)
 
 
 @router.post("/projects/{pid}/branches/generate")
@@ -403,14 +538,19 @@ async def synthesize(pid: str, data: Selection, request: Request):
 async def research(pid: str, data: Version, request: Request, force: bool = False):
     state = services(request)
     state.store.check_version(state.store.get(pid), data.expected_version)
-    return await launch(state, pid, "research", state.agents.research(pid, data.expected_version, force))
+    return await launch(state, pid, "research", state.agents.research(pid, data.expected_version, force), expected=data.expected_version, force=force)
 
 
 @router.get("/projects/{pid}/jobs")
 async def jobs(pid: str, request: Request):
     state = services(request)
-    state.store.get(pid)
-    result = {kind:value for (project, kind), value in state.job_results.items() if project == pid}
+    p = state.store.get(pid)
+    result = {}
+    for kind, runs in p['processing']['runs'].items():
+        if runs:
+            r = runs[-1]
+            result[kind] = {'status':'canceled' if interrupted(r) else r['status'], 'version':r['version'], 'result':r.get('result',{}), 'error':r.get('error'), 'finished':r.get('finished')}
+    result.update({kind:value for (project, kind), value in state.job_results.items() if project == pid})
     result.update({kind: {"status": "running"} for project, kind in state.jobs if project == pid})
     return result
 

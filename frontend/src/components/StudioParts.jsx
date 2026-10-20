@@ -45,7 +45,7 @@ export function ModelDialog({runtime,close,guard,refresh}) {
   const [hardware,setHardware] = useState(null)
   const [working,setWorking] = useState(false)
   const [inspection,setInspection] = useState(null)
-  const [config,setConfig] = useState({model:'compact',device:'cpu',path:'',steps:64,quantize:false,offload:false,
+  const [config,setConfig] = useState({model:'compact',device:'cpu',path:'',steps:64,quality_mode:'quality',quantize:false,offload:false,
     repo:'',revision:'',...saved,source:saved.source || (saved.path ? 'local' : 'catalog')})
   useEffect(()=>{api('/hardware').then(setHardware).catch(()=>{})},[runtime?.runtime.state])
   const catalog = runtime?.catalog || []
@@ -99,6 +99,7 @@ export function ModelDialog({runtime,close,guard,refresh}) {
         <small>{inspection.path}</small><small>Full compatibility is checked when the model loads.</small></div>}
     </fieldset>
     <div className="model-fields">
+      <label className="field">Generation mode<select disabled={working} value={config.quality_mode} onChange={e=>change({quality_mode:e.target.value})}><option value="quality">Quality · more refinement</option><option value="speed">Speed · fewer refinement steps</option></select><small className="muted">Quality uses LLaDA's recommended editing thresholds and scales Dream/Compact steps with output length. Longer reviews take more time and memory.</small></label>
       <label className="field">Device<select disabled={working} value={config.device} onChange={e=>change({device:e.target.value,...(!e.target.value.startsWith('cuda:')?{quantize:false,offload:false}:{})})}>
         <option value="cpu">CPU · slower updates</option>{hardware?.gpus.map(g=><option key={g.index} value={`cuda:${g.index}`}>{g.name} · {(g.free_mb/1024).toFixed(1)} / {(g.vram_mb/1024).toFixed(1)} GiB free</option>)}
         {hardware?.os==='Darwin'&&<option value="mps">Apple Metal · execution check required</option>}
