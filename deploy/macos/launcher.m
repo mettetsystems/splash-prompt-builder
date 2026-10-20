@@ -30,7 +30,7 @@ extern char **environ;
                       stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     NSCharacterSet *digits = [NSCharacterSet decimalDigitCharacterSet];
     if (port.length == 0 || port.length > 5 || [[port stringByTrimmingCharactersInSet:digits] length] != 0) {
-        port = @"8000";
+        port = @"43827";
     }
     return [NSString stringWithFormat:@"http://127.0.0.1:%@", port];
 }

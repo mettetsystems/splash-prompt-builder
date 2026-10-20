@@ -49,6 +49,36 @@ class ProjectAPI(unittest.TestCase):
         response = self.client.post(self.base+'/proposals/accept', json={'ids':[c['id'] for c in p['proposals']], 'expected_version':p['draft']['version']})
         self.assertEqual(response.json()['draft']['text'], 'Explore waves. Preserve informed consent.')
 
+    def test_live_preview_review_keeps_input_and_confirms_exact_output(self):
+        original = copy.deepcopy(self.p['draft'])
+        with app.state.store.edit(self.p['id']) as p:
+            p['proposals'] = proposals(p['draft']['text'], 'Explore waves. Preserve informed consent.', 1)
+        ids = [c['id'] for c in p['proposals']]
+        review = self.client.post(self.base+'/merge-review', json={'expected_version':1, 'proposal_ids':ids}).json()
+        self.assertEqual(review['text'], 'Explore waves. Preserve informed consent.')
+        self.assertEqual(self.client.get(self.base).json()['draft'], original)
+        self.client.delete(self.base+'/merge/'+review['id'])
+        self.assertEqual(self.client.post(self.base+'/merge/'+review['id']).status_code, 409)
+        self.assertEqual(self.client.get(self.base).json()['draft'], original)
+        review = self.client.post(self.base+'/merge-review', json={'expected_version':1, 'proposal_ids':ids}).json()
+        merged = self.client.post(self.base+'/merge/'+review['id']).json()
+        main = next(r for r in merged['revisions'] if r['id'] == merged['main_id'])
+        self.assertEqual(main['text'], review['text'])
+        self.assertEqual(len(main['metadata']['accepted_edits']), len(ids))
+        self.assertIn(original, merged['revisions'])
+        self.assertEqual(self.client.post(self.base+'/merge/'+review['id']).json()['main_id'], merged['main_id'])
+
+    def test_background_rewrite_invalidates_live_merge_review(self):
+        with app.state.store.edit(self.p['id']) as p:
+            p['proposals'] = proposals(p['draft']['text'], 'Explore waves.', 1)
+        review = self.client.post(self.base+'/merge-review', json={'expected_version':1, 'proposal_ids':[c['id'] for c in p['proposals']]}).json()
+        with app.state.store.edit(self.p['id']) as p:
+            p['proposals'] = proposals(p['draft']['text'], 'Explore tides.', 1)
+        self.assertEqual(self.client.post(self.base+'/merge/'+review['id']).status_code, 409)
+        unchanged = self.client.get(self.base).json()
+        self.assertEqual(unchanged['main_id'], self.p['main_id'])
+        self.assertEqual(unchanged['draft'], self.p['draft'])
+
     def test_unicode_validation_settings_limits_and_agent_immutability(self):
         for body in ({'branch_count':6}, {'branch_count':0}, {'agent':'splash-code'}):
             self.assertEqual(self.client.patch(self.base,json=body).status_code,422)

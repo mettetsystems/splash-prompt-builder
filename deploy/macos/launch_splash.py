@@ -18,7 +18,7 @@ import urllib.request
 
 
 HOST = "127.0.0.1"
-DEFAULT_PORT = 8000
+DEFAULT_PORT = 43827
 
 
 def bundle_resources(script_path=None):

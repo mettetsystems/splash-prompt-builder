@@ -115,7 +115,7 @@ class MacPackageTests(unittest.TestCase):
 
 class LaunchSplashTests(unittest.TestCase):
     def test_server_stays_on_loopback(self):
-        command = server_command("/Applications/Splash.app/Contents/Resources/python/bin/python3", 8000)
+        command = server_command("/Applications/Splash.app/Contents/Resources/python/bin/python3", 43827)
         self.assertEqual(command[command.index("--host") + 1], "127.0.0.1")
         self.assertNotIn("0.0.0.0", command)
 
@@ -143,10 +143,10 @@ class LaunchSplashTests(unittest.TestCase):
     def test_port_file_round_trip(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            write_port(directory, 8001)
-            self.assertEqual(read_port(directory), 8001)
+            write_port(directory, 43828)
+            self.assertEqual(read_port(directory), 43828)
             (directory / "port").write_text("nope")
-            self.assertEqual(read_port(directory), 8000)
+            self.assertEqual(read_port(directory), 43827)
 
     def test_pick_port_skips_a_bound_port(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:

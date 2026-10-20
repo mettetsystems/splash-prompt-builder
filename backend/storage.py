@@ -72,6 +72,10 @@ class Store:
             if not row:
                 raise KeyError("Project not found")
             project = json.loads(row[0])
+            project.setdefault("comments", [])
+            project.setdefault("comment_review", None)
+            from backend.state import initialize
+            initialize(project)
             yield project
             project["updated"] = now()
             db.execute("UPDATE projects SET body=? WHERE id=?", (json.dumps(project), project_id))
@@ -81,7 +85,12 @@ class Store:
             row = db.execute("SELECT body FROM projects WHERE id=?", (project_id,)).fetchone()
         if not row:
             raise KeyError("Project not found")
-        return json.loads(row[0])
+        project = json.loads(row[0])
+        project.setdefault("comments", [])
+        project.setdefault("comment_review", None)
+        from backend.state import initialize
+        initialize(project)
+        return project
 
     def list(self, query=""):
         with self.connect() as db:
@@ -110,7 +119,8 @@ class Store:
                    "draft": draft, "revisions": [first], "origin": origin,
                    "documents": copy.deepcopy(imported["documents"]) if imported else [],
                    "sources": copy.deepcopy(imported["sources"]) if imported else [],
-                   "branches": [], "proposals": [], "reviews": [], "queries": [],
+                   "branches": [], "proposals": [], "reviews": [], "queries": [], "comments": [], "comment_review": None,
+                   "processing": {"runs": {}, "settled": None}, "edit_decisions": [],
                    "system_prompts": copy.deepcopy(imported.get("system_prompts", [])) if imported else [],
                    "settings": {"research": False, "scholar": False, "branch_count": 3,
                                 "output": "prose" if agent == "splash" else "structured"}}
@@ -139,6 +149,10 @@ class Store:
         p["draft"] = revision(text, "draft", old["sources"] if sources is None else sources,
                               metadata or {"base_main": p["main_id"], "prior_draft":old["id"]})
         p["draft"]["version"] = old["version"] + 1
+        from backend.comments import reanchor_threads
+        reanchor_threads(p, old["text"], text, p["draft"]["version"])
+        from backend.state import reanchor_decisions
+        reanchor_decisions(p, old["text"], text)
         # Proposals always belong to exactly one input revision.
         p["proposals"] = []
 
@@ -156,15 +170,25 @@ class Store:
             self.replace_draft(p, target["text"], copy.deepcopy(target["sources"]), {"restored_from": revision_id})
         return p
 
-    def review(self, pid, expected):
+    def review(self, pid, expected, proposal_ids=None):
         with self.edit(pid) as p:
             self.check_version(p, expected)
             main = self.find_revision(p, p["main_id"])
-            if main["text"] == p["draft"]["text"]:
+            text, sources = p["draft"]["text"], p["draft"]["sources"]
+            selected = []
+            if proposal_ids:
+                # Resolve the exact visible preview inside this transaction. Reviewing
+                # enrichment must not replace the user's editable input draft.
+                from backend.agents import apply_proposals
+                text, sources = apply_proposals(p, proposal_ids)
+                selected = copy.deepcopy([c for c in p["proposals"] if c["id"] in proposal_ids])
+            if len(text) > 80000:
+                raise ValueError("The enriched prompt exceeds 80,000 characters.")
+            if main["text"] == text:
                 raise ValueError("The draft has no changes to merge.")
             review = {"id": uid(), "main_id": p["main_id"], "draft_version": expected,
-                      "text": p["draft"]["text"], "sources": copy.deepcopy(p["draft"]["sources"]),
-                      "diff": diff(main["text"], p["draft"]["text"]), "created": now(), "result_id": None}
+                      "text": text, "sources": copy.deepcopy(sources), "proposals": selected,
+                      "diff": diff(main["text"], text), "created": now(), "result_id": None}
             p["reviews"].append(review)
         return review
 
@@ -177,12 +201,20 @@ class Store:
                 return p  # A retried confirmation has no additional side effects.
             if review.get("canceled") or review["main_id"] != p["main_id"] or review["draft_version"] != p["draft"]["version"]:
                 raise Conflict("This merge review is stale. Review the current draft again.")
+            selected = review.get("proposals", [])
+            if selected and any(c not in p["proposals"] for c in selected):
+                raise Conflict("The live enrichment changed. Review the current preview again.")
             new = revision(review["text"], "main", review["sources"],
-                           {"prior_main": p["main_id"], "draft_id": p["draft"]["id"], "review_id": review_id})
+                           {"prior_main": p["main_id"], "draft_id": p["draft"]["id"], "review_id": review_id,
+                            **({"accepted_edits": selected} if selected else {})})
             p["revisions"].append(new)
             p["main_id"] = new["id"]
             review["result_id"] = new["id"]
+            from backend.state import accept_edits, settle, mark_accepted_threads
+            mark_accepted_threads(p, selected)
             self.replace_draft(p, new["text"], copy.deepcopy(new["sources"]))
+            accept_edits(p, selected)
+            settle(p, 'confirmed_main')
         return p
 
     def delete(self, pid):

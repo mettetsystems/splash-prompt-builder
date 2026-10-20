@@ -11,8 +11,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.storage import Conflict, diff, now, uid
 from backend.models import CATALOG, hardware
-from backend.agents import apply_proposals, library_defaults
+from backend.agents import apply_proposals, library_defaults, operator_note
 from backend.research import parse_document
+from backend.checkpoints import dependency_status, source_spec, inspect_local, inspect_remote, fetch_checkpoint, downloaded_source
+from backend.comments import anchor, thread, get_thread, apply_suggestion, review_document, answer_comment, add_threads, consistency_comments
+from backend.state import input_key, claim, finish, interrupted, reject_edits, accept_edits, comment_edit, overlaps, mark_accepted_threads
 
 router = APIRouter(prefix="/api")
 MAX_TEXT = 80_000
@@ -57,6 +60,24 @@ class Selection(Version):
     ids: list[str] = Field(max_length=500)
 
 
+class MergeReview(Version):
+    proposal_ids: list[str] = Field(default_factory=list, max_length=10000)
+
+
+class CommentCreate(Version):
+    text: str = Field(min_length=1, max_length=4000)
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+
+
+class CommentReply(Input):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class CommentStatus(Input):
+    status: Literal["open", "resolved", "dismissed"]
+
+
 class Refine(Version):
     focus: int | None = Field(default=None, ge=0)
 
@@ -71,9 +92,13 @@ class Settings(Input):
 
 class LoadModel(Input):
     model: Literal["compact", "dream", "llada"]
-    path: str = ""
+    path: str = Field(default="", max_length=4096)
+    source: Literal["catalog", "huggingface", "local"] = "catalog"
+    repo: str = Field(default="", max_length=300)
+    revision: str = Field(default="", max_length=200)
     device: str = Field(default="cpu", pattern=r"^(cpu|mps|cuda:[0-9]+)$")
     steps: int = Field(default=64, ge=16, le=512)
+    quality_mode: Literal['quality', 'speed'] = 'quality'
     context: int | None = Field(default=None, ge=512, le=32768)
     quantize: bool = False
     offload: bool = False
@@ -91,6 +116,12 @@ class LoadModel(Input):
 
 class Download(Input):
     model: Literal["compact", "dream", "llada"]
+    repo: str = Field(default="", max_length=300)
+    revision: str = Field(default="", max_length=200)
+
+
+class InspectCheckpoint(Download):
+    path: str = Field(default="", max_length=4096)
 
 
 class SystemPrompt(Input):
@@ -230,9 +261,8 @@ async def delete_project(pid: str, request: Request):
 @router.put("/projects/{pid}/draft")
 async def save_draft(pid: str, data: Draft, request: Request):
     state = services(request)
-    for kind in ("refine", "research", "branches", "synthesize"):
-        task = state.jobs.get((pid, kind))
-        if task:
+    for (project_id, kind), task in list(state.jobs.items()):
+        if project_id == pid:
             task.cancel()
     return await changed(state, state.store.save_draft(pid, data.text, data.expected_version))
 
@@ -244,8 +274,8 @@ async def restore_draft(pid: str, data: Restore, request: Request):
 
 
 @router.post("/projects/{pid}/merge-review")
-async def merge_review(pid: str, data: Version, request: Request):
-    return services(request).store.review(pid, data.expected_version)
+async def merge_review(pid: str, data: MergeReview, request: Request):
+    return services(request).store.review(pid, data.expected_version, data.proposal_ids)
 
 
 @router.post("/projects/{pid}/merge/{review_id}")
@@ -375,7 +405,9 @@ async def accept_proposals(pid: str, data: Selection, request: Request):
         if len(text) > MAX_TEXT:
             raise ValueError("Accepted draft would exceed 80,000 characters.")
         accepted = [c for c in old_proposals if c["id"] in data.ids]
+        mark_accepted_threads(p, accepted)
         state.store.replace_draft(p, text, sources, {"base_main":p["main_id"], "prior_draft":p["draft"]["id"], "accepted_edits":accepted})
+        accept_edits(p, accepted)
         for change in old_proposals:
             if change["id"] in data.ids:
                 continue
@@ -393,8 +425,89 @@ async def reject_proposals(pid: str, data: Selection, request: Request):
     state = services(request)
     with state.store.edit(pid) as p:
         state.store.check_version(p, data.expected_version)
-        p["proposals"] = [s for s in p["proposals"] if s["id"] not in data.ids]
+        rejected = [s for s in p['proposals'] if s['id'] in data.ids]
+        if len(rejected) != len(set(data.ids)):
+            raise Conflict('Select current proposals to dismiss.')
+        reject_edits(p, rejected)
     return await changed(state, p)
+
+
+@router.post("/projects/{pid}/comments")
+async def create_comment(pid: str, data: CommentCreate, request: Request):
+    state = services(request)
+    if not data.text.strip() or data.start == data.end:
+        raise ValueError("Select a passage and write a comment.")
+    with state.store.edit(pid) as p:
+        state.store.check_version(p, data.expected_version)
+        p["comments"].append(thread("note", data.text.strip(), [anchor(p['draft']['text'], data.start, data.end, data.expected_version)], author="you", origin="user"))
+    return await changed(state, p)
+
+
+@router.post("/projects/{pid}/comments/{comment_id}/reply")
+async def reply_comment(pid: str, comment_id: str, data: CommentReply, request: Request):
+    if not data.text.strip():
+        raise ValueError("Write a reply first.")
+    state = services(request)
+    with state.store.edit(pid) as p:
+        comment = get_thread(p, comment_id)
+        comment['messages'].append({"id":uid(), "author":"you", "text":data.text.strip(), "created":now()})
+        comment['updated'] = now()
+    return await changed(state, p)
+
+
+@router.patch("/projects/{pid}/comments/{comment_id}")
+async def resolve_comment(pid: str, comment_id: str, data: CommentStatus, request: Request):
+    state = services(request)
+    with state.store.edit(pid) as p:
+        comment = get_thread(p, comment_id)
+        if comment['status'] == 'accepted':
+            raise ValueError("Applied edits stay in discussion history. Start a new comment to revisit the wording.")
+        if comment['kind']=='suggestion' and not comment['outdated']:
+            edit = comment_edit(comment)
+            if data.status in ('resolved','dismissed'):
+                reject_edits(p, [edit], data.status, comment_id)
+            elif data.status=='open':
+                for d in p['edit_decisions']:
+                    if d['status']!='accepted' and (d.get('comment_id')==comment_id or overlaps(d, edit)):
+                        d['active']=False
+        comment['status'], comment['updated'] = data.status, now()
+    return await changed(state, p)
+
+
+@router.post("/projects/{pid}/comments/{comment_id}/apply")
+async def accept_comment(pid: str, comment_id: str, data: Version, request: Request):
+    state = services(request)
+    with state.store.edit(pid) as p:
+        state.store.check_version(p, data.expected_version)
+        comment = get_thread(p, comment_id)
+        text = apply_suggestion(p, comment)
+        edit = comment_edit(comment)
+        comment['status'], comment['updated'] = 'accepted', now()
+        state.store.replace_draft(p, text, list(dict.fromkeys(p['draft']['sources'] + comment['sources'])),
+            {'comment_id':comment_id, 'prior_draft':p['draft']['id'], 'accepted_edits':[copy.deepcopy(comment)]})
+        accept_edits(p, [edit])
+    return await changed(state, p)
+
+
+@router.post("/projects/{pid}/comments/review")
+async def review_comments(pid: str, data: Version, request: Request, force: bool = False):
+    state = services(request)
+    p = state.store.get(pid)
+    state.store.check_version(p, data.expected_version)
+    return await launch(state, pid, 'comments', review_document(state.agents, pid, data.expected_version), expected=data.expected_version, force=force)
+
+
+@router.post("/projects/{pid}/comments/{comment_id}/ask")
+async def ask_comment(pid: str, comment_id: str, data: Version, request: Request):
+    state = services(request)
+    p = state.store.get(pid)
+    state.store.check_version(p, data.expected_version)
+    comment = get_thread(p, comment_id)
+    if comment['status'] != 'open' or comment['outdated']:
+        raise ValueError("Reopen a current discussion before asking the reviewer.")
+    if state.models.status['state'] != 'ready':
+        raise ValueError("Load a model to ask the reviewer. Your comment is saved locally.")
+    return await launch(state, pid, 'comment_reply', answer_comment(state.agents, pid, comment_id, comment['messages'][-1]['id']))
 
 
 @router.post("/projects/{pid}/branches/select")
@@ -409,40 +522,76 @@ async def select_branches(pid: str, data: Selection, request: Request):
     return await changed(state, p)
 
 
-async def launch(state, pid, kind, operation):
+async def launch(state, pid, kind, operation, *, expected=None, force=False, focus=None):
     current = state.jobs.get((pid, kind))
     if current and not current.done():
         operation.close()
         return {"status": "already_running"}
+    run_id = None
+    if expected is not None:
+        try:
+            with state.store.edit(pid) as p:
+                state.store.check_version(p, expected)
+                run_id, response = claim(p, kind, input_key(p, kind, state.models.status, focus), force)
+            if response:
+                operation.close()
+                return response
+        except Exception:
+            operation.close()
+            raise
+    def checkpoint(status, result=None, error=None):
+        if run_id:
+            try:
+                with state.store.edit(pid) as p:
+                    finish(p, kind, run_id, status, result, error)
+            except KeyError:
+                pass  # The user deleted the project while this job was running.
     async def run():
-        await publish(state, pid, "progress", job=kind, status="running")
+        await publish(state, pid, "progress", job=kind, status="running", draft_version=expected)
         try:
             async with asyncio.timeout(120 if kind == "research" else 600):
                 result = await operation
-            state.job_results[(pid, kind)] = {"status": "complete", "result": result, "finished": now()}
-            await publish(state, pid, "job_complete", job=kind, result=result)
+            checkpoint('complete', result)
+            state.job_results[(pid, kind)] = {"status": "complete", "result": result, "finished": now(), 'version':expected}
+            await publish(state, pid, "job_complete", job=kind, result=result, draft_version=expected)
         except asyncio.CancelledError:
-            state.job_results[(pid, kind)] = {"status": "canceled"}
-            await publish(state, pid, "job_canceled", job=kind)
+            checkpoint('canceled')
+            state.job_results[(pid, kind)] = {"status": "canceled", 'version':expected}
+            await publish(state, pid, "job_canceled", job=kind, draft_version=expected)
             raise
+        except (InterruptedError, Conflict):
+            checkpoint('canceled')
+            state.job_results[(pid, kind)] = {"status": "canceled", 'version':expected}
+            await publish(state, pid, "job_canceled", job=kind, draft_version=expected)
         except TimeoutError:
             message = "This task reached its time limit. The main prompt is unchanged; try a smaller scope or a faster profile."
-            state.job_results[(pid, kind)] = {"status": "error", "error": message}
-            await publish(state, pid, "job_error", job=kind, message=message)
+            checkpoint('error', error=message)
+            state.job_results[(pid, kind)] = {"status": "error", "error": message, 'version':expected}
+            await publish(state, pid, "job_error", job=kind, message=message, draft_version=expected)
         except Exception as exc:
-            state.job_results[(pid, kind)] = {"status": "error", "error": str(exc)}
-            await publish(state, pid, "job_error", job=kind, message=str(exc))
+            checkpoint('error', error=str(exc))
+            state.job_results[(pid, kind)] = {"status": "error", "error": str(exc), 'version':expected}
+            await publish(state, pid, "job_error", job=kind, message=str(exc), draft_version=expected)
         finally:
-            state.jobs.pop((pid, kind), None)
+            operation.close()
+            if state.jobs.get((pid, kind)) is asyncio.current_task():
+                state.jobs.pop((pid, kind), None)
     state.jobs[(pid, kind)] = asyncio.create_task(run())
+    def canceled_before_start(task):
+        if task.cancelled():
+            checkpoint('canceled')
+            operation.close()
+        if state.jobs.get((pid, kind)) is task and task.done():
+            state.jobs.pop((pid, kind), None)
+    state.jobs[(pid, kind)].add_done_callback(canceled_before_start)
     return {"status": "started"}
 
 
 @router.post("/projects/{pid}/refine")
-async def refine(pid: str, data: Refine, request: Request):
+async def refine(pid: str, data: Refine, request: Request, force: bool = False):
     state = services(request)
     state.store.check_version(state.store.get(pid), data.expected_version)
-    return await launch(state, pid, "refine", state.agents.enrich(pid, data.expected_version, data.focus))
+    return await launch(state, pid, "refine", state.agents.enrich(pid, data.expected_version, data.focus), expected=data.expected_version, force=force, focus=data.focus)
 
 
 @router.post("/projects/{pid}/branches/generate")
@@ -463,14 +612,19 @@ async def synthesize(pid: str, data: Selection, request: Request):
 async def research(pid: str, data: Version, request: Request, force: bool = False):
     state = services(request)
     state.store.check_version(state.store.get(pid), data.expected_version)
-    return await launch(state, pid, "research", state.agents.research(pid, data.expected_version, force))
+    return await launch(state, pid, "research", state.agents.research(pid, data.expected_version, force), expected=data.expected_version, force=force)
 
 
 @router.get("/projects/{pid}/jobs")
 async def jobs(pid: str, request: Request):
     state = services(request)
-    state.store.get(pid)
-    result = {kind:value for (project, kind), value in state.job_results.items() if project == pid}
+    p = state.store.get(pid)
+    result = {}
+    for kind, runs in p['processing']['runs'].items():
+        if runs:
+            r = runs[-1]
+            result[kind] = {'status':'canceled' if interrupted(r) else r['status'], 'version':r['version'], 'result':r.get('result',{}), 'error':r.get('error'), 'finished':r.get('finished')}
+    result.update({kind:value for (project, kind), value in state.job_results.items() if project == pid})
     result.update({kind: {"status": "running"} for project, kind in state.jobs if project == pid})
     return result
 
@@ -485,7 +639,22 @@ async def system_prompts(pid: str, request: Request):
 async def save_system_prompts(pid: str, data: SystemPromptList, request: Request):
     state = services(request)
     with state.store.edit(pid) as project:
-        project["system_prompts"] = stored_system_prompts(data.prompts)
+        prompts = stored_system_prompts(data.prompts)
+        instructions_changed = operator_note(project.get('system_prompts')) != operator_note(prompts)
+        project["system_prompts"] = prompts
+        if instructions_changed:
+            project['system_prompt_revision'] = project.get('system_prompt_revision', 0) + 1
+            project['processing']['settled'] = None
+            project['proposals'] = []
+            project['enrichment_review'] = None
+            project['comment_review'] = None
+            for comment in project['comments']:
+                if comment['origin'] in ('enrichment', 'review') and comment['status'] == 'open':
+                    comment.update(outdated=True, outdated_reason='Project system prompts changed. Review again with the current instructions.')
+    if instructions_changed:
+        for (project_id, _), task in list(state.jobs.items()):
+            if project_id == pid:
+                task.cancel()
     return await changed(state, project)
 
 
@@ -527,28 +696,43 @@ async def models(request: Request):
     state = services(request)
     catalog = [{"id": key, **info, "downloaded": (state.store.directory / "models" / key / "config.json").is_file()} for key, info in CATALOG.items()]
     return {"catalog": catalog, "runtime": state.models.status, "downloads": state.downloads,
-            "mcp": {"state": state.tools.state, "error": state.tools.error}, "data_directory": str(state.store.directory)}
+            "mcp": {"state": state.tools.state, "error": state.tools.error}, "data_directory": str(state.store.directory),
+            "dependencies": dependency_status()}
+
+
+@router.post("/models/inspect")
+async def inspect_model(data: InspectCheckpoint, request: Request):
+    if data.path.strip():
+        return {"source": "local", **await asyncio.to_thread(inspect_local, data.path, data.model)}
+    spec = source_spec(data.model, data.repo, data.revision)
+    try:
+        return await asyncio.to_thread(inspect_remote, services(request).store.directory, spec)
+    except Exception as exc:
+        raise ValueError(f"Could not inspect the Hugging Face checkpoint: {exc}") from exc
 
 
 @router.post("/models/download")
 async def download_model(data: Download, request: Request):
     state = services(request)
-    if state.downloads.get(data.model, {}).get("state") == "downloading":
-        return state.downloads[data.model]
-    info = CATALOG[data.model]
-    path = state.store.directory / "models" / data.model
+    spec = source_spec(data.model, data.repo, data.revision)
+    key = spec["id"]
+    if state.downloads.get(key, {}).get("state") == "downloading":
+        return state.downloads[key]
+    # Reserve before starting the task so duplicate HTTP requests share one job.
+    state.downloads[key] = {**spec, "state": "downloading", "stage": "Checking repository"}
     async def download():
-        state.downloads[data.model] = {"state": "downloading", "path": str(path), "revision": info["revision"]}
         try:
-            from huggingface_hub import snapshot_download
-            await asyncio.to_thread(snapshot_download, info["repo"], revision=info["revision"], local_dir=path)
-            state.downloads[data.model]["state"] = "complete"
+            record = await asyncio.to_thread(inspect_remote, state.store.directory, spec)
+            state.downloads[key].update(record, stage="Downloading checkpoint files")
+            checked = await asyncio.to_thread(fetch_checkpoint, record)
+            state.downloads[key].update(checked, state="complete", stage="Ready to load")
+            state.store.set_config("model_downloads", {k:v for k,v in state.downloads.items() if v.get("state") == "complete"})
         except Exception as exc:
-            state.downloads[data.model].update(state="error", error=str(exc))
+            state.downloads[key].update(state="error", error=str(exc))
     task = asyncio.create_task(download())
     state.background.add(task)
     task.add_done_callback(state.background.discard)
-    return {"state": "downloading"}
+    return state.downloads[key]
 
 
 @router.post("/models/load")
@@ -556,13 +740,33 @@ async def load_model(data: LoadModel, request: Request):
     state = services(request)
     if state.models.status["state"] == "loading":
         raise Conflict("A model is already loading.")
+    dependencies = dependency_status()
+    missing = dependencies["missing"] + (["bitsandbytes"] if data.quantize and not dependencies["packages"]["bitsandbytes"] else [])
+    if missing:
+        raise ValueError(f"Missing model dependencies in {dependencies['python']}: {', '.join(missing)}. Run python scripts/setup.py --install-models{' --quantize' if data.quantize else ''} in the Splash project folder, then restart Splash.")
     config = data.model_dump(exclude_none=True)
-    config["path"] = str(Path(data.path).expanduser().resolve()) if data.path else str(state.store.directory / "models" / data.model)
-    if not (Path(config["path"]) / "config.json").is_file():
-        raise ValueError("Download the model or supply an existing checkpoint directory first.")
+    if data.source == "huggingface":
+        if not data.repo.strip():
+            raise ValueError("Enter the Hugging Face repository to load.")
+        record = downloaded_source(state.downloads, source_spec(data.model, data.repo, data.revision))
+        config.update(path=record["path"], repo=record["repo"], revision=record["revision"])
+    elif data.path.strip():
+        config.update(path=str(Path(data.path).expanduser().resolve()), source="local", repo="", revision="")
+    elif data.source == "local":
+        raise ValueError("Enter the local checkpoint directory.")
+    else:
+        config.update(path=str(state.store.directory / "models" / data.model),
+                      repo=CATALOG[data.model]["repo"], revision=CATALOG[data.model]["revision"])
+        if state.downloads.get(data.model, {}).get("state") == "downloading":
+            raise Conflict("Wait for this checkpoint download to finish before loading.")
+    await asyncio.to_thread(inspect_local, config["path"], data.model)
     config["context"] = min(config.get("context", CATALOG[data.model]["context"]), CATALOG[data.model]["context"])
-    state.store.set_config("model", config)
-    task = asyncio.create_task(state.models.load(config))
+    state.models.status = {"state": "loading", "model": data.model, "engine": "diffusion", "config": config}
+    async def load():
+        result = await state.models.load(config)
+        if result["state"] == "ready":
+            state.store.set_config("model", config)
+    task = asyncio.create_task(load())
     state.background.add(task)
     task.add_done_callback(state.background.discard)
     return {"state": "loading"}

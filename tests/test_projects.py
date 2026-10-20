@@ -1,5 +1,7 @@
 import asyncio
 import copy
+import json
+import re
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -9,6 +11,7 @@ from backend.storage import Store, Conflict, diff
 from backend.agents import Agents, DEFAULT_SYSTEM_PROMPTS, operator_note, proposals, apply_proposals, missing_constraints, rank_sources, retain_explicit_requirements
 from backend.mcp_host import ToolHost
 from backend.research import Providers, parse_document, retrieve_context, public_get
+from tests.enrichment_helpers import prepare
 
 
 class Projects(unittest.TestCase):
@@ -132,6 +135,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.models = type("Models", (), {"status": {"state": "ready", "config": {"context": 2048}}})()
         self.models.generate = AsyncMock(return_value={"text": "Compare mechanisms and cost constraints. Open questions: reconcile incompatible scopes.", "latency_ms": 10})
         self.models.sections = AsyncMock(side_effect=lambda text, *args: [{"text":text, "start":0, "end":len(text)}])
+        self.models.plan_review = AsyncMock(side_effect=prepare)
         self.tools = type("Tools", (), {"call": AsyncMock(return_value={"sources": []})})()
         self.agents = Agents(self.store, self.models, self.tools)
 
@@ -163,6 +167,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         with self.store.edit(project["id"]) as saved:
             saved["system_prompts"] = prompts
         other = self.store.create("splash", "Explain caching.")
+        self.models.generate.return_value = {"text": "NONE"}
         await self.agents.enrich(project["id"], 1)
         system = self.models.generate.await_args.args[0][0]
         self.assertEqual(system["role"], "system")
@@ -170,7 +175,9 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Ignore the draft.", system["content"])
         self.assertNotIn(DEFAULT_SYSTEM_PROMPTS["splash"]["text"], system["content"])
         self.assertIn("Preserve all constraints", system["content"])
-        self.assertIn("Prefer short sentences.", self.models.sections.await_args.args[1])
+        self.assertIn("Prefer short sentences.", self.models.plan_review.await_args.args[1])
+        self.assertGreater(system['content'].index('Return at most TWO short records'),
+                           system['content'].index('Prefer short sentences.'))
         self.models.generate.reset_mock()
         await self.agents.enrich(other["id"], 1)
         fallback = self.models.generate.await_args.args[0][0]["content"]
@@ -190,11 +197,22 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(DEFAULT_SYSTEM_PROMPTS["splash-search"]["text"], searched)
         self.assertNotIn(DEFAULT_SYSTEM_PROMPTS["splash-code"]["text"], searched)
 
+    async def test_enrichment_rejects_system_prompt_changes_during_inference(self):
+        project = self.store.create('splash', 'Explain caching.')
+        async def generate(*args, **kwargs):
+            with self.store.edit(project['id']) as saved:
+                saved['system_prompts'] = [{'name':'Voice','text':'Use short sentences.','enabled':True}]
+            return {'text':'NONE'}
+        self.models.generate.side_effect = generate
+        with self.assertRaisesRegex(Conflict, 'system prompts changed'):
+            await self.agents.enrich(project['id'], 1)
+        self.assertEqual(self.store.get(project['id'])['draft'], project['draft'])
+
     async def test_lossy_enrichment_never_creates_proposals(self):
         p = self.store.create("splash-code", "Read `user_id`. Include tests.")
-        self.models.generate.return_value = {"text":"Read the user identifier."}
-        with self.assertRaisesRegex(ValueError, "omitted protected content"):
-            await self.agents.enrich(p["id"], 1)
+        self.models.generate.return_value = {"text":json.dumps({'suggestions':[{'quote':'Read `user_id`.', 'replacement':'Read the user identifier.', 'reason':'Clarifies the identifier for the intended audience.', 'evidence':[]}]})}
+        result = await self.agents.enrich(p["id"], 1)
+        self.assertIn('omitted protected content', result['quality']['withheld'][0])
         saved = self.store.get(p["id"])
         self.assertEqual(saved["proposals"], [])
         self.assertEqual(saved["draft"]["text"], p["draft"]["text"])
@@ -214,9 +232,18 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         with self.store.edit(self.p["id"]) as p:
             p["documents"].append({"id":"notes", "name":"brief.pdf", "pages":[{"page":7,"text":"Use observational evidence."}]})
         self.tools.call.return_value = retrieve_context(p, "observational evidence")
-        result = await self.agents.enrich(p["id"], 1)
-        saved = self.store.get(p["id"])
-        self.assertTrue(result["proposals"])
+        async def generate(messages, **kwargs):
+            ref_id = re.search(r'\[(C\d+)\] document', messages[-1]['content'])[1]
+            return {'text':json.dumps({'suggestions':[{'quote':'Study renewable energy', 'replacement':'Study renewable energy using observational evidence',
+                'reason':'The uploaded brief specifies observational evidence for this study.', 'evidence':[{'id':ref_id,'quote':'Use observational evidence.'}]}]})}
+        # This case tests evidence provenance, without editing the explicit cost constraint.
+        self.p = self.store.create('splash-search', 'Study renewable energy. Preserve the cost constraint.')
+        with self.store.edit(self.p['id']) as project:
+            project['documents'] = p['documents']
+        self.models.generate.side_effect = generate
+        result = await self.agents.enrich(self.p["id"], 1)
+        saved = self.store.get(self.p["id"])
+        self.assertTrue(result["proposals"], result)
         self.assertEqual(saved["sources"][0]["page"], 7)
         self.assertEqual(result["proposals"][0]["sources"], [saved["sources"][0]["id"]])
 

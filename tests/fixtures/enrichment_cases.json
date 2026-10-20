@@ -1,0 +1,10 @@
+[
+  {"id":"grounded-website","agent":"splash-code","prompt":"Make the website faster. Do not change checkout behavior.","context":"The current priority is mobile product pages. The product page loads a 6 MB hero image before any text appears. Checkout runs on a separate service. We have no agreed latency target yet. Preserve the current React application."},
+  {"id":"missing-target","agent":"splash","prompt":"Make the website faster.","context":""},
+  {"id":"clear-instruction","agent":"splash-code","prompt":"Create a Python CLI that reads a UTF-8 file supplied as a positional argument and prints its contents. Use only the standard library. Include tests for a missing file and invalid UTF-8.","context":""},
+  {"id":"scholarly-scope","agent":"splash-search","prompt":"Study bilingual education and reading outcomes after 2015. Preserve informed consent. Do not infer causality from observational studies.","context":"Our brief concerns primary-school students learning Spanish and English. Compare longitudinal cohort studies with randomized trials. Reading comprehension is the outcome of interest; vocabulary recall is outside scope."},
+  {"id":"spanish","agent":"splash-code","prompt":"Crea una herramienta Python que lea un archivo UTF-8. No uses dependencias externas. Incluye pruebas.","context":""},
+  {"id":"chinese","agent":"splash","prompt":"为客户解释产品发布延迟。不要承诺新的发布日期。保留引用“项目海浪”。","context":""},
+  {"id":"compatible-goals","agent":"splash","prompt":"Explain AI tools to small-business owners. Use a friendly, professional tone. Keep the examples practical.","context":"The readers manage small retail shops and are new to AI. Focus on appointment scheduling and stock management."},
+  {"id":"conflicting-directions","agent":"splash-code","prompt":"Use cloud APIs. Do not use cloud APIs.","context":""}
+]
