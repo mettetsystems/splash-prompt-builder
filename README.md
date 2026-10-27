@@ -12,6 +12,8 @@ This release includes real diffusion inference, a persistent MCP tool host, and 
 
 ## Start here
 
+Splash is licensed under the **GNU General Public License v3.0 only** (`GPL-3.0-only`). See [LICENSE](LICENSE) for the full terms. Third-party components and model checkpoints retain their respective licenses; bundled attribution is preserved in [backend/vendor/NOTICE](backend/vendor/NOTICE) and [backend/vendor/LICENSE](backend/vendor/LICENSE).
+
 You need **Python 3.11 or later**, **Node.js 22.12 or later with npm**, and a current browser. Initial setup installs the editor, builds the frontend, and **installs PyTorch and the model adapters automatically** for the detected hardware. It verifies imports and a small device calculation before reporting success. Model-runtime packages can be large; an internet connection is required for packages not already cached. Model checkpoints remain separate downloads. Use `--profile editor` only if you intentionally want to skip local inference dependencies.
 
 From the repository directory on Linux or macOS:
