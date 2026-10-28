@@ -40,6 +40,9 @@ async def lifespan(application):
     state.tools.start()
     configured = state.store.config("model")
     if configured:
+        if configured.get("model") in {"compact", "dream", "llada"}:
+            configured = {"model": "qwen3.5:4b", "context": 4096}
+            state.store.set_config("model", configured)
         task = asyncio.create_task(state.models.load(configured))
         state.background.add(task)
         task.add_done_callback(state.background.discard)
@@ -121,7 +124,7 @@ class PromptUpdate(BaseModel):
 @app.get("/healthz")
 async def health_check():
     runtime = getattr(app.state, "models", None)
-    return {"status": "healthy", "engine": "diffusion", "version": "2.0.0",
+    return {"status": "healthy", "engine": "ollama", "version": "2.0.0",
             "model": runtime.status if runtime else {"state": "unloaded"}}
 
 
@@ -193,4 +196,7 @@ app.mount("/assets", StaticFiles(directory=DIST / "assets", check_dir=False), na
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend.app:app", host="127.0.0.1", port=8000, ws_max_size=MAX_MESSAGE_BYTES)
+    # One server process owns the shared model worker; extra workers would each
+    # initialize their own application state and compete for accelerator memory.
+    uvicorn.run("backend.app:app", host="127.0.0.1", port=8000,
+                ws_max_size=MAX_MESSAGE_BYTES, access_log=False)

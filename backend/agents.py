@@ -1,13 +1,15 @@
 """Agent policies produce proposals and variants; only explicit acceptance changes a draft."""
 import asyncio
 import json
+import math
 import re
+import unicodedata
 from difflib import SequenceMatcher
 from urllib.parse import urlsplit
 
 from backend.storage import Conflict, now, revision, uid
 from backend.research import retrieve_context, OFFICIAL_HOSTS
-from backend.models import CATALOG
+from backend.models import EMBEDDING_MODEL
 
 DEFAULT_SYSTEM_PROMPTS = {
     "splash": {
@@ -78,6 +80,32 @@ def proposals(before, after, version, sources=None, rationale="Language and inst
              "version": version, "sources": sources or [], "rationale": rationale}
             for tag, a, b, c, d in SequenceMatcher(None, before, after, autojunk=len(before) > 12000).get_opcodes()
             if tag != "equal"]
+
+
+STOP_WORDS = set("a an and are as at be by for from has have in into is it its of on or that the this to with you your we our".split())
+INTENTS = ("request or action", "question or inquiry", "description or context", "constraint or requirement", "creative direction", "research goal")
+
+
+def normalize_sentence(text):
+    """Normalize model input without changing the exact source anchor."""
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFC", text)).strip()
+
+
+def sentence_keywords(text, limit=8):
+    words = re.findall(r"[\w'-]+", normalize_sentence(text).casefold(), flags=re.UNICODE)
+    counts = {}
+    for word in words:
+        if len(word) > 2 and word not in STOP_WORDS and not word.isnumeric():
+            counts[word] = counts.get(word, 0) + 1
+    return [word for word, _ in sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))[:limit]]
+
+
+def closest_intent(vector, labels, label_vectors):
+    def cosine(left, right):
+        dot = sum(a*b for a, b in zip(left, right))
+        denom = math.sqrt(sum(a*a for a in left) * sum(b*b for b in right))
+        return dot / denom if denom else 0
+    return max(zip(labels, label_vectors), key=lambda pair: cosine(vector, pair[1]))[0]
 
 
 def apply_proposals(project, ids):
@@ -157,8 +185,7 @@ class Agents:
     def generation_info(self):
         status = self.models.status
         config = status.get("config", {})
-        return {"model":status.get("model"), "model_revision":CATALOG.get(status.get("model"), {}).get("revision"),
-                "device":config.get("device"), "steps":config.get("steps"), "created":now()}
+        return {"model":status.get("model"), "engine":"ollama", "context":config.get("context"), "created":now()}
 
     async def enrich(self, pid, expected, focus=None):
         p = self.store.get(pid)
@@ -166,10 +193,22 @@ class Agents:
         text = p["draft"]["text"]
         if not text.strip():
             raise ValueError("Write a draft before refining it.")
+        context = retrieve_context(p, text[:300], 3)
         try:
-            context = await self.tools.call(p, "search_context", {"query": text[:300], "limit": 3})
+            from backend.local_index import retrieve as vector_retrieve, index_status
+            status = await asyncio.to_thread(index_status, self.store.directory, pid)
+            if status["ready"]:
+                vector_passages = await vector_retrieve(self.store.directory, pid, text[:300], self.models, 3)
+                by_key = {(c["document_id"], c["page"]): c for c in context["passages"]}
+                for passage in vector_passages:
+                    match = by_key.get((passage.get("document_id"), passage.get("page")))
+                    if match:
+                        passage["name"] = match["name"]
+                context["passages"] = vector_passages + context["passages"]
+                context["passages"] = context["passages"][:3]
         except Exception:
-            context = retrieve_context(p, text[:300], 3)
+            # BM25 stays usable when the optional local vector extension is absent.
+            pass
         passages = context.get("passages", [])
         # Reserve room for the user's instruction on the smallest context profile.
         used_context = passages[:1]
@@ -180,6 +219,16 @@ class Agents:
         overview = "\nOriginal project objective: " + self.store.find_revision(p, p["main_id"])["text"][:180]
         suffix = overview + hints
         segments = await self.models.sections(text, instruction, suffix, 256)
+        normalized = [normalize_sentence(part["text"]) for part in segments]
+        sentence_vectors, intent_vectors = [], []
+        try:
+            embedded = await self.models.request("POST", "/api/embed", json={"model": EMBEDDING_MODEL,
+                "input": normalized + list(INTENTS), "options": {"num_gpu": 0}})
+            all_vectors = embedded.json().get("embeddings", [])
+            sentence_vectors = all_vectors[:len(normalized)]
+            intent_vectors = all_vectors[len(normalized):]
+        except Exception as exc:
+            raise RuntimeError(f"EmbeddingGemma is unavailable. Pull {EMBEDDING_MODEL} and retry.") from exc
         improved, metrics = [], []
         for index, part in enumerate(segments):
             section = part["text"]
@@ -190,8 +239,10 @@ class Agents:
             if focus is not None and start <= focus <= start + len(section):
                 improved.append(section)
                 continue
+            keywords = sentence_keywords(section)
+            intent = closest_intent(sentence_vectors[index], INTENTS, intent_vectors) if sentence_vectors and intent_vectors else "request or action"
             output = await self.models.generate([{"role": "system", "content": instruction},
-                {"role": "user", "content": f"Prompt section:\n{section}{suffix}"}], max_tokens=256)
+                {"role": "user", "content": f"Sentence to enrich (retain its intent):\n{normalized[index]}\n\nLikely intent: {intent}\nKeywords: {', '.join(keywords)}{suffix}"}], max_tokens=256)
             if not output["text"].strip():
                 raise ValueError("The model returned an empty rewrite. The draft is unchanged.")
             output["text"] = retain_explicit_requirements(section, output["text"])
@@ -201,7 +252,7 @@ class Agents:
                 raise ValueError("The model omitted protected content: " + ", ".join(missing[:4])[:220] + ". The draft is unchanged. Try another model or diffusion schedule.")
             improved.append(output["text"])
             metrics.append({k:v for k,v in output.items() if k != "text"})
-        result = "\n\n".join(improved) if len(segments) > 1 else improved[0]
+        result = "\n".join(improved) if len(segments) > 1 else improved[0]
         with self.store.edit(pid) as current:
             self.store.check_version(current, expected)
             sources = []
@@ -215,7 +266,16 @@ class Agents:
                 else:
                     current["sources"].append(source)
                 sources.append(source["id"])
-            current["proposals"] = proposals(text, result, expected, sources)
+            current["proposals"] = []
+            for part, original, after in zip(segments, [part["text"] for part in segments], improved):
+                if original != after:
+                    current["proposals"].append({"id":uid(), "start":part["start"], "end":part["end"],
+                        "before":original, "after":after, "version":expected, "sources":sources,
+                        "rationale":"Sentence intent: " + (closest_intent(sentence_vectors[segments.index(part)], INTENTS, intent_vectors)
+                            if sentence_vectors and intent_vectors else "request or action") +
+                            "; keywords: " + ", ".join(sentence_keywords(original)),
+                        "keywords":sentence_keywords(original), "intent": closest_intent(sentence_vectors[segments.index(part)], INTENTS, intent_vectors)
+                            if sentence_vectors and intent_vectors else "request or action"})
             for proposal in current["proposals"]:
                 proposal["generation"] = self.generation_info()
                 if context_text:

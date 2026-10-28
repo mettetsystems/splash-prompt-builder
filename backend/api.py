@@ -10,7 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.storage import Conflict, diff, now, uid
-from backend.models import CATALOG, hardware
+from backend.models import OLLAMA_CATALOG, EMBEDDING_MODEL, hardware, select_ollama_model, gpu_supports_large_models
 from backend.agents import apply_proposals, library_defaults
 from backend.research import parse_document
 
@@ -70,27 +70,19 @@ class Settings(Input):
 
 
 class LoadModel(Input):
-    model: Literal["compact", "dream", "llada"]
-    path: str = ""
-    device: str = Field(default="cpu", pattern=r"^(cpu|mps|cuda:[0-9]+)$")
-    steps: int = Field(default=64, ge=16, le=512)
-    context: int | None = Field(default=None, ge=512, le=32768)
-    quantize: bool = False
-    offload: bool = False
-    gpu_memory: str = Field(default="6GiB", pattern=r"^[1-9][0-9]?GiB$")
-    cpu_memory: str = Field(default="24GiB", pattern=r"^[1-9][0-9]{0,2}GiB$")
-
-    @model_validator(mode="after")
-    def compatible_options(self):
-        if self.quantize and self.offload:
-            raise ValueError("Choose NF4 or CPU offload, not both.")
-        if (self.quantize or self.offload) and not self.device.startswith("cuda:"):
-            raise ValueError("NF4 and GPU/CPU offload require a CUDA device in this release.")
-        return self
+    model: str = Field(min_length=1, max_length=100)
+    context: int | None = Field(default=4096, ge=512, le=32768)
+    automatic: bool = False
 
 
 class Download(Input):
-    model: Literal["compact", "dream", "llada"]
+    model: str = Field(min_length=1, max_length=100)
+
+
+class LocalIndex(Input):
+    directory: str = Field(default="", max_length=2000)
+    recursive: bool = False
+    confirm_nested: bool = False
 
 
 class SystemPrompt(Input):
@@ -222,6 +214,11 @@ async def delete_project(pid: str, request: Request):
     for (project_id, _), task in list(state.jobs.items()):
         if project_id == pid:
             task.cancel()
+    try:
+        from backend.local_index import remove_index
+        await asyncio.to_thread(remove_index, state.store.directory, pid)
+    except Exception:
+        pass
     state.store.delete(pid)
     await publish(state, pid, "project_deleted")
     return {"deleted": pid}
@@ -362,7 +359,57 @@ async def remove_document(pid: str, document_id: str, request: Request):
     state = services(request)
     with state.store.edit(pid) as p:
         p["documents"] = [d for d in p["documents"] if d["id"] != document_id]
+    try:
+        from backend.local_index import remove_index
+        await asyncio.to_thread(remove_index, state.store.directory, pid)
+    except Exception:
+        pass
     return await changed(state, p)
+
+
+@router.get("/projects/{pid}/local-index")
+async def local_index_status(pid: str, request: Request):
+    state = services(request)
+    state.store.get(pid)
+    from backend.local_index import index_status
+    return await asyncio.to_thread(index_status, state.store.directory, pid)
+
+
+@router.post("/projects/{pid}/local-index")
+async def create_local_index(pid: str, data: LocalIndex, request: Request):
+    state = services(request)
+    project = state.store.get(pid)
+    from backend.local_index import directory_documents, index_documents
+    if data.recursive and not data.confirm_nested:
+        raise ValueError("Confirm indexing supported files from nested folders.")
+    documents = list(project["documents"])
+    if data.directory:
+        imported = await asyncio.to_thread(directory_documents, data.directory, data.recursive)
+        existing_names = {d["name"] for d in documents}
+        documents.extend(d for d in imported if d["name"] not in existing_names)
+    if len(documents) > 30:
+        raise ValueError("A project can contain up to 30 context documents.")
+    if not documents:
+        raise ValueError("Import context files or choose a directory before creating an index.")
+    await state.models.inspect()
+    if not state.models.status.get("available"):
+        raise ValueError("Start Ollama before creating a local vector index.")
+    installed = state.models.status.get("installed_models", [])
+    if EMBEDDING_MODEL not in installed and EMBEDDING_MODEL+":latest" not in installed:
+        raise ValueError("Download EmbeddingGemma before creating a local vector index.")
+    result = await index_documents(state.store.directory, pid, documents, state.models)
+    with state.store.edit(pid) as current:
+        current["documents"] = documents
+    return {"ready": True, "chunks": result.get("indexed", 0), "documents": len(documents)}
+
+
+@router.delete("/projects/{pid}/local-index")
+async def delete_local_index(pid: str, request: Request):
+    state = services(request)
+    state.store.get(pid)
+    from backend.local_index import remove_index
+    removed = await asyncio.to_thread(remove_index, state.store.directory, pid)
+    return {"ready": False, "removed": removed}
 
 
 @router.post("/projects/{pid}/proposals/accept")
@@ -525,23 +572,36 @@ async def inspect_hardware(request: Request):
 @router.get("/models")
 async def models(request: Request):
     state = services(request)
-    catalog = [{"id": key, **info, "downloaded": (state.store.directory / "models" / key / "config.json").is_file()} for key, info in CATALOG.items()]
+    status = await state.models.inspect()
+    device = await asyncio.to_thread(hardware)
+    try:
+        recommended = select_ollama_model(device["gpus"], device["available_ram_gb"])
+        recommendation_error = None
+    except ValueError as exc:
+        recommended, recommendation_error = None, str(exc)
+    installed = set(status.get("installed_models", []))
+    catalog = [{"id": key, **info, "downloaded": key in installed or key+":latest" in installed,
+                "compatible": (device["available_ram_gb"] >= info["ram_gb"] if key == "qwen3.5:4b" else
+                    any(gpu_supports_large_models(g.get("name", "")) and g.get("free_mb", 0) >= info["ram_gb"] * 0.8 * 1024
+                        for g in device["gpus"]) and device["available_ram_gb"] >= info["ram_gb"]),
+                "recommended": key == recommended} for key, info in OLLAMA_CATALOG.items()]
     return {"catalog": catalog, "runtime": state.models.status, "downloads": state.downloads,
+            "recommended_model": recommended, "recommendation_error": recommendation_error,
+            "ollama": {**status, "embedding_model": EMBEDDING_MODEL},
             "mcp": {"state": state.tools.state, "error": state.tools.error}, "data_directory": str(state.store.directory)}
 
 
 @router.post("/models/download")
 async def download_model(data: Download, request: Request):
     state = services(request)
+    if data.model not in (*OLLAMA_CATALOG.keys(), EMBEDDING_MODEL):
+        raise ValueError("Choose a model from the supported local catalog.")
     if state.downloads.get(data.model, {}).get("state") == "downloading":
         return state.downloads[data.model]
-    info = CATALOG[data.model]
-    path = state.store.directory / "models" / data.model
     async def download():
-        state.downloads[data.model] = {"state": "downloading", "path": str(path), "revision": info["revision"]}
+        state.downloads[data.model] = {"state": "downloading", "model": data.model}
         try:
-            from huggingface_hub import snapshot_download
-            await asyncio.to_thread(snapshot_download, info["repo"], revision=info["revision"], local_dir=path)
+            await state.models.request("POST", "/api/pull", json={"name": data.model, "stream": False})
             state.downloads[data.model]["state"] = "complete"
         except Exception as exc:
             state.downloads[data.model].update(state="error", error=str(exc))
@@ -557,10 +617,21 @@ async def load_model(data: LoadModel, request: Request):
     if state.models.status["state"] == "loading":
         raise Conflict("A model is already loading.")
     config = data.model_dump(exclude_none=True)
-    config["path"] = str(Path(data.path).expanduser().resolve()) if data.path else str(state.store.directory / "models" / data.model)
-    if not (Path(config["path"]) / "config.json").is_file():
-        raise ValueError("Download the model or supply an existing checkpoint directory first.")
-    config["context"] = min(config.get("context", CATALOG[data.model]["context"]), CATALOG[data.model]["context"])
+    if data.automatic:
+        device = await asyncio.to_thread(hardware)
+        config["model"] = select_ollama_model(device["gpus"], device["available_ram_gb"])
+    if config["model"] not in OLLAMA_CATALOG:
+        raise ValueError("Choose a supported Ollama model from the catalog.")
+    detected = await asyncio.to_thread(hardware)
+    config["cpu_only"] = config["model"] == "qwen3.5:4b" and not any(
+        gpu_supports_large_models(g.get("name", "")) for g in detected["gpus"])
+    config["context"] = min(config.get("context", 4096), OLLAMA_CATALOG[config["model"]]["context"])
+    status = await state.models.inspect()
+    installed = status.get("installed_models", [])
+    if config["model"] not in installed and config["model"]+":latest" not in installed:
+        raise ValueError("Download this Ollama model before loading it.")
+    if EMBEDDING_MODEL not in installed and EMBEDDING_MODEL+":latest" not in installed:
+        raise ValueError("Download EmbeddingGemma before loading the enrichment model.")
     state.store.set_config("model", config)
     task = asyncio.create_task(state.models.load(config))
     state.background.add(task)

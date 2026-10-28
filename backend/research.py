@@ -4,6 +4,7 @@ import io
 import html
 import ipaddress
 import json
+import math
 import re
 import socket
 import time
@@ -16,7 +17,7 @@ from bs4 import BeautifulSoup
 from backend.storage import uid, now
 
 OFFICIAL_HOSTS = ("docs.python.org", "developer.mozilla.org", "typescriptlang.org", "react.dev", "nodejs.org",
-                  "docs.rs", "doc.rust-lang.org", "go.dev", "learn.microsoft.com", "docs.github.com")
+                  "docs.rs", "doc.rust-lang.org", "go.dev", "docs.github.com", "gutenberg.org", "arxiv.org", "zenodo.org")
 
 
 def clean_html(text):
@@ -92,11 +93,29 @@ def context_chunks(project):
 
 
 def retrieve_context(project, query, limit=4):
-    terms = set(re.findall(r"\w+", query.casefold()))
+    terms = re.findall(r"\w+", query.casefold())
     chunks = context_chunks(project)
-    ranked = sorted(chunks, key=lambda c: sum(c["text"].casefold().count(t) for t in terms if len(t) > 2), reverse=True)
+    # BM25Okapi ranking, implemented locally to keep lexical search dependency-light.
+    docs = [re.findall(r"\w+", c["text"].casefold()) for c in chunks]
+    lengths = [len(doc) for doc in docs]
+    average = sum(lengths) / max(1, len(lengths))
+    document_frequency = {term: sum(term in set(doc) for doc in docs) for term in set(terms)}
+    scores = []
+    for chunk, tokens, length in zip(chunks, docs, lengths):
+        counts = {}
+        for token in tokens:
+            counts[token] = counts.get(token, 0) + 1
+        score = 0.0
+        for term in set(terms):
+            frequency = counts.get(term, 0)
+            if not frequency:
+                continue
+            idf = math.log(1 + (len(chunks) - document_frequency[term] + 0.5) / (document_frequency[term] + 0.5))
+            score += idf * frequency * 2.5 / (frequency + 1.5 * (0.25 + 0.75 * length / max(1, average)))
+        scores.append((score, chunk))
+    ranked = [chunk for score, chunk in sorted(scores, key=lambda pair: pair[0], reverse=True) if score > 0]
     selected = ranked[:limit]
-    return {"passages": selected, "total_passages": len(chunks), "excluded_passages": max(0, len(chunks)-len(selected))}
+    return {"passages": selected, "total_passages": len(chunks), "excluded_passages": max(0, len(chunks)-len(selected)), "ranking": "bm25"}
 
 
 def evidence(title, url, text, provider, level="abstract", **extras):

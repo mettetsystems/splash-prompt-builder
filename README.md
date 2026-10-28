@@ -4,11 +4,11 @@
   <img src="frontend/src/assets/splash-logo.jpg" alt="Splash — Prompt Enrichment" width="440" />
 </p>
 
-**A local prompt studio with diffusion models, evidence, and reversible decisions.**
+**A local prompt studio with Ollama models, evidence, and reversible decisions.**
 
 Splash helps turn an initial idea into a clearer instruction for an LLM or agent. Each prompt lives in its own project, with an immutable main prompt, an editable working draft, context, suggested edits, and a history of every promotion. A model can propose a change; only you can make it the main prompt.
 
-This release includes real diffusion inference, a persistent MCP tool host, and a complete local project workflow. Model execution has been measured on an RTX 2070, an RTX 5090, and a CPU. **Enrichment quality is still experimental:** models can repeat text, introduce assumptions, or miss semantic constraints. There is no custom-trained Splash checkpoint, and execution success is not a quality certification. See [measured results](#measured-hardware-and-quality) and [remaining model work](MODEL_ROADMAP.md).
+The project studio uses local Ollama inference, sentence-level intent analysis, optional per-project vector indexes, and a persistent MCP tool host. **Enrichment quality is experimental:** models can repeat text, introduce assumptions, or miss semantic constraints. Every sentence suggestion stays reviewable, and only you can promote a draft to the main prompt. Historical diffusion measurements below do not characterize Ollama.
 
 ## Start here
 
@@ -88,40 +88,11 @@ This packager was added from a Linux checkout and has not been launched on macOS
 
 ## Install and select a model
 
-Install a PyTorch build appropriate to your operating system and GPU using the [official PyTorch installer](https://pytorch.org/get-started/locally/), then install the model adapters:
+Install [Ollama](https://ollama.com/download), start its local service, and open **Model & hardware** in Splash. If Ollama is unavailable, the dialog links to its installer. Splash never silently installs system software. Download the recommended model and EmbeddingGemma from the dialog, then click **Load & run check**.
 
-```sh
-.venv/bin/python -m pip install -r backend/requirements-models.txt
-```
+Splash uses Ollama's local API. GPUs below the RTX 2070 class use Qwen3.5 4B on CPU. Eligible GPUs use the largest supported model that fits free VRAM and system RAM with a memory reserve. The catalog includes Qwen3.5 9B, 27B, 35B, and 122B, plus Gemma4 26B. You can select a different model manually; estimates vary by Ollama quantization and available context. EmbeddingGemma 300M supplies sentence intent and semantic retrieval embeddings.
 
-On Windows use `.\.venv\Scripts\python.exe` in place of `.venv/bin/python` in all model commands. The tested Linux environment uses Python 3.14, PyTorch `2.14.1+cu130`, Transformers `4.57.6`, Accelerate `1.15.0`, and optional bitsandbytes `0.50.2`. To reproduce its modern NVIDIA runtime, where matching wheels are available:
-
-```sh
-.venv/bin/python -m pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cu130
-.venv/bin/python -m pip install -r backend/requirements-models.txt
-.venv/bin/python -m pip install bitsandbytes==0.50.2
-```
-
-Use a separate environment for an older GPU; the CUDA 13 profile is not the GTX 1050 profile. For CPU-only use, select the CPU wheel from PyTorch's installer and leave NF4 and CPU offload unchecked. For Apple Silicon, install the macOS PyTorch wheel and try the Metal device check; **Metal remains unverified in this release**, so CPU is the available fallback. A failed accelerator check is shown as an error and never changes the selected engine silently.
-
-Open **Model & hardware**:
-
-1. Scan the machine. Splash reports OS, CPU threads, RAM, disk space, GPU name and architecture, driver, and free VRAM. Device indices use PCI ordering.
-2. Choose a model and device. Download the pinned checkpoint, or enter the directory of an existing complete checkpoint. Allow space for the download, extraction/cache metadata, and runtime memory.
-3. Set the context budget and diffusion steps. Enable **NF4** for a compatible CUDA device with bitsandbytes installed. CPU offload is a separate, experimental option, with a default 6 GiB GPU / 24 GiB CPU budget.
-4. Click **Load & run check**. The worker loads actual weights and runs a generation. The dialog reports the result, latency, and peak allocated GPU memory. The selected configuration is restored at the next application start.
-
-All projects use this one model; agents supply different instructions and tool permissions. Changing the selected model replaces the worker's loaded model. Hugging Face downloads use pinned commit revisions and reuse partial downloads when retried. Downloaded models live under the application's `models/` directory. Checkpoints from your own directory are used in place.
-
-The candidate checkpoints contain custom model code, loaded locally with `trust_remote_code=True`. Bundled downloads pin that code to these revisions; only select an existing checkpoint directory you trust.
-
-| Profile | Checkpoint | Pinned revision | Approximate download | App context ceiling |
-|---|---|---|---:|---:|
-| Compact | [Qwen3-0.6B diffusion MDLM](https://huggingface.co/dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1) | `c8d24a3f4adaeef46881b450e1bf7d1005203bd7` | 1.6 GB | 1,024 tokens |
-| Balanced | [Dream-v0-Instruct-7B](https://huggingface.co/Dream-org/Dream-v0-Instruct-7B) | `05334cb9faaf763692dcf9d8737c642be2b2a6ae` | 15 GB | 2,048 tokens |
-| Extended | [LLaDA2.1-mini](https://huggingface.co/inclusionAI/LLaDA2.1-mini) | `20e64e2ad21644d0e5248586ed9c942cdd45de0f` | 34 GB | 32,768 tokens |
-
-These are application ceilings, including instructions, input, context, and output reservation; they are not guarantees that the maximum fits every device. NF4 reduces runtime weight memory, not the source checkpoint download. The LLaDA adapter uses its native confidence-based block/editing schedule; the diffusion-steps control applies to Compact and Dream. Local compatibility changes are documented in [backend/vendor/NOTICE](backend/vendor/NOTICE).
+Model files remain managed by Ollama. Splash stores projects and its local Chroma index in the application data directory. Set `SPLASH_OLLAMA_URL` before starting Splash to use an Ollama service at a non-default local endpoint.
 
 ## Choose an agent and create a project
 
@@ -192,7 +163,7 @@ Branch creation, selection, and synthesis never merge a main automatically. The 
 
 PDF page numbers, document names, and extracted passages are retained. **The stored attachment is extracted text with page references, not the original PDF binary or its layout.** Keep the original file separately. OCR, image interpretation, encrypted/image-only PDFs, and automatic repository inspection are outside this release.
 
-Retrieval is local lexical passage ranking. Enrichment currently supplies at most one relevant 350-character excerpt to leave room on the smallest model profile. The UI reports excluded passages/characters and processed prompt sections; accepted context-based edits retain their passage and page provenance. Long prompts are split using the selected model's actual tokenizer without dropping input characters. Each section carries a short main-objective reminder. This preserves access to long input but cannot ensure global semantic consistency across sections.
+Retrieval uses local BM25 ranking, with optional per-project Chroma vector search orchestrated through LangGraph. Sentence normalization retains offsets to the original draft; local NLP extracts keywords and EmbeddingGemma compares each sentence with intent categories. Refinement returns one anchored comment suggestion per changed sentence. Accepted context-based edits retain source and page provenance. Index creation is optional and can use imported project files or a directory path; nested directory indexing requires confirmation.
 
 ### MCP architecture and permissions
 
@@ -220,7 +191,7 @@ Providers:
 
 - **Semantic Scholar:** scholarly metadata and abstracts when available. Its unauthenticated API can return 429; Splash reports that limit and continues through the second provider.
 - **Crossref:** publication metadata and available abstracts; metadata is not treated as full text.
-- **Official documentation:** Bing's RSS search restricted to Python, MDN, TypeScript, React, Node.js, Rust, Go, Microsoft Learn, and GitHub Docs domains. Search availability and relevance can vary.
+- **Open-source and public-domain material:** Bing's RSS search restricted to supported open-source project documentation, arXiv/Zenodo research pages, and Project Gutenberg. Academic queries use Semantic Scholar or Crossref. Search availability and source licensing still require review.
 - **Supplied public URLs:** up to the remaining fetch budget, with redirect and destination validation. Private/intranet URLs are intentionally unavailable.
 - **Google Scholar:** separately opt-in and experimental. Results are cached, requests are spaced at least one minute apart, and 403/429/CAPTCHA responses stop the scraper for that tool-server session. There is no CAPTCHA bypass. Scholar restricts automated access; see its [official guidance](https://scholar.google.com/intl/en/scholar/help.html). Use the other providers when unavailable.
 
@@ -228,9 +199,9 @@ Only focused query keywords are sent to search providers; uploaded documents are
 
 With a ready model, relevant excerpts can produce source-informed edit proposals. Without one, retrieval can still produce clearly labeled “evidence to consult” cards. Neither kind edits a draft without acceptance.
 
-## Measured hardware and quality
+## Legacy model measurements
 
-Checks were run on October 6, 2026 UTC on Linux, an Intel Core Ultra 9 285K with approximately 64 GB RAM, NVIDIA driver 615.71.09, and the runtime above. Figures below are **individual small-prompt samples**, not percentiles, sustained throughput, startup/download time, or full UI latency. GPU memory is PyTorch peak allocated memory, not total device reservation.
+The following measurements document the retired Transformers diffusion runtime and do not characterize Ollama. Checks were run on October 6, 2026 UTC on Linux, an Intel Core Ultra 9 285K with approximately 64 GB RAM, NVIDIA driver 615.71.09, and the runtime above. These are baseline samples from before the SDPA and TF32 tuning described above; requalify the optimized profile on target hardware before comparing its timings. Figures below are **individual small-prompt samples**, not percentiles, sustained throughput, startup/download time, or full UI latency. GPU memory is PyTorch peak allocated memory, not total device reservation.
 
 | Device | Model / mode | Generation samples | Peak GPU allocation | Result |
 |---|---|---:|---:|---|
@@ -257,7 +228,7 @@ Raw outputs and metrics:
 
 The multilingual audit found useful English rewrites but also a dropped French testing requirement, awkward repetition, and limited research expansion. The new constraint guard catches that particular testing omission; general semantic fidelity and graduate-level quality remain review responsibilities. Compact often answers the task instead of improving the instruction. Longer outputs can end at the token limit. No model is represented as fully quality-qualified.
 
-The UI and network remain separate from the worker. One generation runs at a time, the latest pending request wins, and obsolete generations stop between diffusion steps. Browser checks exercise typing during generation and autosave/reload; a formal cross-platform typing-latency percentile benchmark and process-wide peak RAM study remain future work. Research latency is recorded independently in provider checks.
+The UI and network remain separate from the worker. One generation runs at a time through the local Ollama service. Browser checks exercise typing during generation and autosave/reload; a formal cross-platform typing-latency percentile benchmark and process-wide peak RAM study remain future work. Research latency is recorded independently in provider checks.
 
 ## Storage, backups, and deletion
 
@@ -322,11 +293,12 @@ Interactive HTTP documentation is available at **http://127.0.0.1:8000/docs**. P
 | `/projects/{id}/restore` | Restore a revision as a draft |
 | `/projects/{id}/compare/{revision_id}` | Compare a saved revision to the current main |
 | `/projects/{id}/documents` | Upload context |
+| `/projects/{id}/local-index` | Inspect, build, or remove this project's local vector index |
 | `/projects/{id}/refine` | Start proposal generation |
 | `/projects/{id}/branches/generate`, `/select`, `/synthesize` | Manage branch cards and variants |
 | `/projects/{id}/research`, `/jobs` | Research and job status |
 | `/projects/{id}/export`, `/projects/import-file` | Export an archive/prompt or import an archive |
-| `/hardware`, `/models`, `/models/download`, `/models/load` | Inspect and manage shared inference |
+| `/hardware`, `/models`, `/models/download`, `/models/load` | Inspect hardware, Ollama, and manage shared inference |
 | `/projects/{id}/system-prompts` | Read or replace that project's system prompts |
 | `/prompt-repo` | List the built-in defaults and saved library, or save one prompt |
 | `/prompt-repo/import` | Add a `splash-system-prompt` version 1 JSON file to the library |
@@ -352,11 +324,11 @@ The earlier deterministic mock remains isolated in `backend/engine.py` and legac
 
 | Symptom | What to do |
 |---|---|
-| Model controls say no model is ready | Install PyTorch/model requirements, download or select a checkpoint, then load it. Editing/history remain available. |
+| Model controls say no model is ready | Install and start Ollama, download a supported model and EmbeddingGemma in Model & hardware, then load the model. Editing/history remain available. |
 | CUDA unavailable or GPU scan fails | Run `nvidia-smi` in a normal local terminal. A sandbox permission failure does not prove the GPU or driver is absent. Match the runtime to the architecture. |
-| GPU out of memory | Reduce context, choose Compact, or try the measured Dream NF4 profile with bitsandbytes. Check other GPU processes. Offload is experimental and slower. |
-| Model import or custom-code error | Use the pinned requirements and matching catalog checkpoint. LLaDA requires the bundled eager-mask/RoPE compatibility path. Do not mix a random Transformers major version into the tested environment. |
-| A rewrite is rejected for omitted content | The draft is intact. Try another model or diffusion schedule, or refine a smaller task. Review semantic constraints even when the guard passes. |
+| GPU out of memory | Choose a smaller Ollama profile, reduce the context window, or close other GPU workloads. The selected profile estimates memory needs and keeps a reserve. |
+| Model import or custom-code error | Confirm Ollama is running and the selected model tag is installed. Refresh Model & hardware to inspect the service status. |
+| A rewrite is rejected for omitted content | The draft is intact. Try another Ollama model, or refine a smaller task. Review semantic constraints even when the guard passes. |
 | Research returns 429, CAPTCHA, or no results | Other providers may continue. Wait for backoff, try a focused query, or supply a public source URL. Scholar blocking is not bypassed. |
 | MCP tools are unavailable | Local editing still works. The host retries server startup automatically; inspect backend stderr and verify the pinned MCP dependency in the same virtual environment. |
 | Unsaved changes or a stale-merge error | Resolve the displayed recovery/conflict choice, save the draft, and open a new merge review. Never force an old review onto a new revision. |

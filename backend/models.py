@@ -2,20 +2,88 @@
 import asyncio
 import gc
 import importlib.util
+import ipaddress
 import json
 import multiprocessing as mp
 import os
 from pathlib import Path
 import platform
 import queue
+import re
 import shutil
 import subprocess
 import time
+from urllib.parse import urlsplit
 
 from backend.storage import data_directory
 
+OLLAMA_URL = os.environ.get("SPLASH_OLLAMA_URL", "http://127.0.0.1:11434")
+
+# Approximate quantized download/runtime footprints from Ollama's public catalog.
+# Runtime compatibility is checked against free memory with an additional reserve.
+OLLAMA_CATALOG = {
+    "qwen3.5:4b": {"name": "Qwen3.5 4B", "download_gb": 3.4, "ram_gb": 6, "context": 32768, "cpu_default": True},
+    "qwen3.5:9b": {"name": "Qwen3.5 9B", "download_gb": 6.6, "ram_gb": 9, "context": 32768},
+    "qwen3.5:27b": {"name": "Qwen3.5 27B", "download_gb": 17, "ram_gb": 22, "context": 32768},
+    "gemma4:26b": {"name": "Gemma4 26B", "download_gb": 16, "ram_gb": 21, "context": 32768},
+    "qwen3.5:35b": {"name": "Qwen3.5 35B", "download_gb": 22, "ram_gb": 28, "context": 32768},
+    "qwen3.5:122b": {"name": "Qwen3.5 122B", "download_gb": 81, "ram_gb": 96, "context": 32768},
+}
+EMBEDDING_MODEL = "embeddinggemma:300m"
+
+
+def select_ollama_model(gpus, available_ram_gb, manual=None):
+    """Choose the largest catalog model that fits free VRAM (with 20% reserve)."""
+    if manual:
+        if manual not in OLLAMA_CATALOG:
+            raise ValueError("Choose a supported Ollama model from the catalog.")
+        return manual
+    candidates = []
+    eligible = [item for item in gpus if gpu_supports_large_models(item.get("name", ""))]
+    gpu = max(eligible, key=lambda item: item.get("free_mb", 0), default=None)
+    if gpu:
+        free_gb = gpu.get("free_mb", 0) / 1024
+        for model, info in OLLAMA_CATALOG.items():
+            if info["ram_gb"] * 0.8 <= free_gb and info["ram_gb"] <= available_ram_gb:
+                candidates.append(model)
+    if candidates:
+        return max(candidates, key=lambda model: OLLAMA_CATALOG[model]["ram_gb"])
+    if available_ram_gb < OLLAMA_CATALOG["qwen3.5:4b"]["ram_gb"]:
+        raise ValueError("No supported Ollama model fits the available system memory.")
+    return "qwen3.5:4b"
+
+
+def gpu_supports_large_models(name):
+    match = re.search(r"\bRTX\s*(\d{4})\b", name, re.I)
+    return bool(match and int(match.group(1)) >= 2070)
+
 # Match the PCI ordering used by the hardware scanner instead of CUDA's speed ordering.
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+
+
+def configure_torch_runtime(torch, device):
+    """Keep CPU math pools bounded and enable fast NVIDIA math where supported."""
+    try:
+        requested = int(os.environ.get("SPLASH_INFERENCE_THREADS", "4"))
+    except ValueError:
+        requested = 4
+    available_cpus = (getattr(os, "process_cpu_count", os.cpu_count)() or 1)
+    threads = max(1, min(requested, available_cpus))
+    torch.set_num_threads(threads)
+    # Inter-op work is small for this single-request, single-model worker. A single
+    # dispatcher avoids multiplying thread pools on laptops with many logical CPUs.
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        # PyTorch only allows this before the first inter-op operation; safe to keep
+        # the process's existing value if another import initialized it first.
+        pass
+    if device.startswith("cuda") and torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        if hasattr(torch, "set_float32_matmul_precision"):
+            torch.set_float32_matmul_precision("high")
+    return threads
 
 CATALOG = {
     "compact": {"repo": "dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1", "revision": "c8d24a3f4adaeef46881b450e1bf7d1005203bd7",
@@ -50,24 +118,28 @@ def hardware():
     for gpu in result["gpus"]:
         old = float(gpu["capability"]) < 7.5
         result["profiles"].append({"device": f"cuda:{gpu['index']}", "label": gpu["name"],
-            "runtime": "Pascal / CUDA 11.8 compatibility environment or CPU" if old else "Modern CUDA",
-            "candidates": [key for key, model in CATALOG.items() if key == "compact" or gpu["free_mb"] > model["download_gb"] * 1100],
+            "runtime": "Ollama GPU acceleration" if gpu_supports_large_models(gpu["name"]) else "CPU profile for this GPU class",
+            "candidates": ([key for key, model in OLLAMA_CATALOG.items() if key != "qwen3.5:4b"
+                            and gpu["free_mb"] >= model["ram_gb"] * 0.8 * 1024
+                            and result["available_ram_gb"] >= model["ram_gb"]]
+                           if gpu_supports_large_models(gpu["name"]) else ["qwen3.5:4b"]),
             "verified": False})
     if platform.system() == "Darwin" and platform.machine() == "arm64":
         result["profiles"].append({
             "device": "mps", "label": "Apple Metal",
             "runtime": "Unverified until a load check passes; CPU remains available",
-            "candidates": ["compact"], "verified": False,
+            "candidates": ["qwen3.5:4b"], "verified": False,
         })
         if not result["gpus"]:
             result["gpu_status"] = "Apple GPU present; Metal execution is unverified until a load check passes"
-    result["profiles"].append({"device": "cpu", "label": "CPU · slower updates", "candidates": ["compact"], "verified": False})
+    result["profiles"].append({"device": "cpu", "label": "CPU · slower updates", "candidates": ["qwen3.5:4b"], "verified": False})
     return result
 
 
 class DiffusionAdapter:
     def __init__(self, config):
         import torch
+        configure_torch_runtime(torch, config.get("device", "cpu"))
         # Torch 2.14 routes some eager operations through compiled Triton kernels.
         # Keep the portable eager profile independent of a local C/Python toolchain.
         if hasattr(torch, "_native"):
@@ -86,7 +158,12 @@ class DiffusionAdapter:
         dtype = torch.float32 if self.device == "cpu" else torch.float16
         if self.device.startswith("cuda") and torch.cuda.get_device_capability(self.device)[0] >= 8:
             dtype = torch.bfloat16
-        kwargs = dict(local_files_only=True, trust_remote_code=True, torch_dtype=dtype, attn_implementation="eager")
+        # SDPA selects the best supported attention kernel (including Flash
+        # Attention on recent CUDA GPUs). LLaDA's compatibility mask requires eager;
+        # MPS keeps eager until its attention path is qualified across releases.
+        attention = "eager" if self.key == "llada" or self.device == "mps" else "sdpa"
+        kwargs = dict(local_files_only=True, trust_remote_code=True, torch_dtype=dtype,
+                      attn_implementation=attention)
         if config.get("quantize"):
             if not self.device.startswith("cuda"):
                 raise ValueError("NF4 requires a verified CUDA runtime in this release.")
@@ -97,6 +174,21 @@ class DiffusionAdapter:
             kwargs["max_memory"] = {int(self.device.split(":")[1]): config.get("gpu_memory", "6GiB"), "cpu": config.get("cpu_memory", "24GiB")}
             kwargs["offload_folder"] = str(data_directory() / "offload")
         self.tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True, trust_remote_code=True)
+        self.mask_token_id = None
+        if self.key == "compact":
+            self.mask_token_id = self.tokenizer.mask_token_id
+            if self.mask_token_id is None:
+                # Some tokenizer loaders retain the vocabulary entry but fail to
+                # restore its mask-token role from the checkpoint metadata.
+                token_id = self.tokenizer.convert_tokens_to_ids("<|mask|>")
+                if token_id is not None and token_id != self.tokenizer.unk_token_id:
+                    self.tokenizer.mask_token = "<|mask|>"
+                    self.mask_token_id = self.tokenizer.mask_token_id
+            if self.mask_token_id is None:
+                raise ValueError(
+                    "The Compact checkpoint tokenizer is missing the <|mask|> token. "
+                    "Clear the custom checkpoint path and download the pinned Compact checkpoint."
+                )
         if self.key == "compact":
             # Import the pinned local module directly: its __main__ demo imports dllm,
             # which HF's static dependency scanner otherwise incorrectly requires.
@@ -148,7 +240,7 @@ class DiffusionAdapter:
                 finally:
                     hook.remove()
             else:
-                mask = tokenizer.mask_token_id
+                mask = self.mask_token_id
                 output = torch.full((1, ids.shape[1] + max_tokens), mask, dtype=torch.long, device=self.device)
                 output[:, :ids.shape[1]] = ids
                 # Blockwise confidence-based masked diffusion; prompt tokens stay fixed.
@@ -243,105 +335,93 @@ def worker_main(inbox, outbox, cancel):
 
 class ModelService:
     def __init__(self):
-        context = mp.get_context("spawn")
-        self.inbox, self.outbox, self.cancel = context.Queue(), context.Queue(), context.Event()
-        self.process = None
         self.lock = asyncio.Lock()
-        self.sequence = 0
-        self.status = {"state": "unloaded", "model": None, "engine": "diffusion", "error": None}
+        self.status = {"state": "unloaded", "model": None, "engine": "ollama", "error": None}
         self.active_priority = 100
 
-    def invalidate(self):
-        self.sequence += 1
-        self.cancel.set()
+    @property
+    def base_url(self):
+        parsed = urlsplit(OLLAMA_URL)
+        host = parsed.hostname or ""
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = host.casefold() == "localhost"
+        if parsed.scheme != "http" or not loopback or parsed.username or parsed.password:
+            raise ValueError("Splash only connects to Ollama on this computer over HTTP loopback.")
+        return OLLAMA_URL.rstrip("/")
 
-    async def exchange(self, payload):
-        if not self.process or not self.process.is_alive():
-            if self.process is not None:
-                self.process.join(timeout=1)
-                self.inbox.close()
-                self.outbox.close()
-                context = mp.get_context("spawn")
-                self.inbox, self.outbox, self.cancel = context.Queue(), context.Queue(), context.Event()
-            if payload["op"] != "load":
-                self.status.update(state="error", error="The inference process exited. Reload the model.")
-                raise RuntimeError(self.status["error"])
-            self.process = mp.get_context("spawn").Process(target=worker_main, args=(self.inbox, self.outbox, self.cancel), daemon=True)
-            self.process.start()
-        self.cancel.clear()
-        self.inbox.put(payload)
-        started = time.monotonic()
-        while True:
-            try:
-                return self.outbox.get_nowait()
-            except queue.Empty:
-                if not self.process.is_alive():
-                    self.status.update(state="error", error="The inference process exited. Reload the model.")
-                    raise RuntimeError("The inference process exited. Reload the model.")
-                if time.monotonic() - started > 600:
-                    self.process.terminate()
-                    raise RuntimeError("Inference exceeded ten minutes. Use a smaller model or shorter input.")
-                await asyncio.sleep(.05)
+    async def request(self, method, path, **kwargs):
+        import httpx
+        async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=3), trust_env=False) as client:
+            response = await client.request(method, self.base_url + path, **kwargs)
+            response.raise_for_status()
+            return response
+
+    async def inspect(self):
+        try:
+            response = await self.request("GET", "/api/tags")
+            tags = {item["name"] for item in response.json().get("models", [])}
+            self.status.update(available=True, installed=True, installed_models=sorted(tags), error=None)
+        except Exception as exc:
+            if self.status.get("state") == "ready":
+                self.status["state"] = "error"
+            self.status.update(available=False, installed=shutil.which("ollama") is not None,
+                               installed_models=[], error=f"Ollama is not responding at {self.base_url}: {exc}")
+        self.status["engine"] = "ollama"
+        return self.status
 
     async def load(self, config):
-        self.invalidate()
         async with self.lock:
-            self.status = {"state": "loading", "engine": "diffusion", "model": config["model"], "config": config}
+            self.status.update(state="loading", engine="ollama", model=config["model"], config=config)
             try:
-                result = await self.exchange({"op": "load", "config": config})
-                if not result["ok"]:
-                    raise RuntimeError(result["error"])
-                self.status.update(state="ready", qualification=result, error=None)
+                result = await self.request("POST", "/api/chat", json={
+                    "model": config["model"], "messages": [{"role": "user", "content": "Rewrite this as a clear instruction: Explain caching briefly."}],
+                    "stream": False, "options": {"num_ctx": config.get("context", 4096), "num_predict": 64, "temperature": 0,
+                        **({"num_gpu": 0} if config.get("cpu_only") else {})},
+                    "keep_alive": "10m"})
+                text = result.json().get("message", {}).get("content", "").strip()
+                if not text:
+                    raise RuntimeError("Ollama returned an empty execution check.")
+                await self.request("POST", "/api/embed", json={"model": EMBEDDING_MODEL, "input": "intent check", "options": {"num_gpu": 0}})
+                self.status.update(state="ready", qualification={"loaded": True, "text": text,
+                                    "latency_ms": result.json().get("total_duration", 0) // 1_000_000}, error=None)
             except Exception as exc:
                 self.status.update(state="error", error=str(exc))
         return self.status
 
     async def generate(self, messages, max_tokens=256, priority=0):
         if self.status["state"] != "ready":
-            raise RuntimeError("No diffusion model is ready. Open Model settings to load and check one.")
+            raise RuntimeError("No Ollama model is ready. Open Model & hardware settings to select and load one.")
         if priority > self.active_priority:
             raise InterruptedError("Background inference deferred while editing")
-        self.invalidate()
-        ticket = self.sequence
         async with self.lock:
-            if ticket != self.sequence:
-                raise InterruptedError("Generation superseded")
             self.active_priority = priority
-            task = asyncio.create_task(self.exchange({"op": "generate", "messages": messages, "max_tokens": max_tokens}))
             try:
-                result = await asyncio.shield(task)
-                if ticket != self.sequence:
-                    raise InterruptedError("Generation superseded")
-                if not result["ok"]:
-                    raise RuntimeError(result["error"])
+                config = self.status.get("config", {})
+                started = time.perf_counter()
+                response = await self.request("POST", "/api/chat", json={"model": self.status["model"],
+                    "messages": messages, "stream": False, "options": {"num_ctx": config.get("context", 4096),
+                    "num_predict": max_tokens, "temperature": 0, **({"num_gpu": 0} if config.get("cpu_only") else {})}})
+                payload = response.json()
+                result = {"text": payload.get("message", {}).get("content", "").strip(),
+                          "latency_ms": round((time.perf_counter()-started)*1000),
+                          "input_tokens": payload.get("prompt_eval_count"), "output_tokens": payload.get("eval_count"),
+                          "context_limit": config.get("context", 4096)}
+                if not result["text"]:
+                    raise RuntimeError("Ollama returned an empty response.")
                 self.status["last_generation"] = {k:v for k,v in result.items() if k != "text"}
                 return result
-            except asyncio.CancelledError:
-                self.cancel.set()
-                await task  # Drain the worker result before another request owns the queue.
-                raise
             finally:
                 self.active_priority = 100
 
     async def sections(self, text, system, suffix="", max_tokens=256):
         if self.status["state"] != "ready":
-            raise RuntimeError("Load a diffusion model first.")
-        async with self.lock:
-            task = asyncio.create_task(self.exchange({"op":"sections", "text":text, "system":system, "suffix":suffix, "max_tokens":max_tokens}))
-            try:
-                result = await asyncio.shield(task)
-            except asyncio.CancelledError:
-                await task
-                raise
-            if not result["ok"]:
-                raise RuntimeError(result["error"])
-            return result["sections"]
+            raise RuntimeError("Load an Ollama model first.")
+        # Keep sentences intact; the cap is generous relative to prompt limits.
+        import re
+        spans = list(re.finditer(r".+?(?:[.!?。！？]+(?=\s|$)|\n+|$)", text, re.S))
+        return [{"text": match.group(), "start": match.start(), "end": match.end()} for match in spans if match.group().strip()]
 
     async def close(self):
-        self.invalidate()
-        if self.process and self.process.is_alive():
-            self.inbox.put(None)
-            await asyncio.to_thread(self.process.join, 3)
-            if self.process.is_alive():
-                self.process.terminate()
-                await asyncio.to_thread(self.process.join, 2)
+        return None
