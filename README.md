@@ -534,3 +534,14 @@ The earlier deterministic mock remains isolated in `backend/engine.py` and legac
 | macOS app does not open | Build it on a Mac with `python3 scripts/package_macos.py`. Right-click the app and choose Open the first time. Quit from the Splash menu. Read `~/Library/Logs/Splash/splash.log`. |
 
 Custom training, stronger multilingual/constraint evaluation, certified GTX 1050/Windows/Metal profiles, richer retrieval, cloud synchronization, Windows application packaging, arbitrary external MCP servers, and autonomous code execution are future work. A macOS app can be built with `scripts/package_macos.py`. See [MODEL_ROADMAP.md](MODEL_ROADMAP.md) for the remaining model-specific work.
+
+
+### Ollama catalog and optional local document index
+
+Model & hardware now offers an additional Ollama catalog with a recommendation based on available RAM and free GPU memory. Use **Check Ollama & available memory**, download a model, and explicitly confirm **Start selected model**. The smaller CPU profile remains available when no supported GPU has sufficient free memory. These are estimates, not a guarantee that every context length fits. Existing endpoint selection and local diffusion checkpoints remain supported.
+
+Startup reconnects to a saved Ollama model only if it is already running. It never downloads or starts Ollama weights automatically. Reusing a model through the existing-endpoint controls remains the preferred option when another AI application owns it. Explicitly starting an Ollama model releases Splash's own diffusion worker first; it does not stop other applications.
+
+Context retrieval uses local BM25 ranking. For optional vector retrieval, install `backend/requirements.txt`, start local Ollama, download **EmbeddingGemma for indexing** in Model & hardware, and choose **Create local index** on the Context tab. Import supported text/code/PDF files or enter a local directory; nested folders require the checkbox. Creating and querying an index runs CPU embeddings in bounded batches, requires at least 2 GiB of available system memory, and releases the embedding model after each request. No embedding model is required for ordinary enrichment. If vector retrieval is unavailable, enrichment continues with lexical context and its existing structured review checks.
+
+Ollama management uses `SPLASH_OLLAMA_URL` (default `http://127.0.0.1:11434`) and accepts only HTTP loopback addresses. Diffusion CPU thread pools default to four threads; `SPLASH_INFERENCE_THREADS` can adjust the cap.

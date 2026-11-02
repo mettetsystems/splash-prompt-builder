@@ -41,11 +41,16 @@ async def lifespan(application):
     state.background = set()
     state.tools.start()
     configured = state.store.config("model")
+    # Older Ollama configurations lacked a source marker. Reconnect only;
+    # never treat their catalog name as a diffusion checkpoint or auto-load it.
+    if configured and not configured.get('source') and configured.get('model', '').startswith(('qwen3.5:', 'gemma4:')):
+        from backend.ollama import OllamaClient
+        configured = {**configured, 'source': 'ollama', 'base_url': OllamaClient().base_url + '/v1'}
     state.endpoints = []
     if configured and os.environ.get("SPLASH_SKIP_MODEL_LOAD") == "1":
         state.models.status.update(model=configured["model"], config=configured,
             notice="Automatic model loading skipped for this session. Load a model in Model & hardware when ready.")
-    elif configured and configured.get('source') == 'endpoint':
+    elif configured and configured.get('source') in ('endpoint', 'ollama'):
         task = asyncio.create_task(state.models.load(configured))
         state.background.add(task)
         task.add_done_callback(state.background.discard)

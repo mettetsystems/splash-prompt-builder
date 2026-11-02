@@ -15,6 +15,7 @@ import sys
 import time
 
 from backend.storage import data_directory
+from backend.ollama import OllamaClient
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,30 @@ def release_model_memory():
 
 # Match the PCI ordering used by the hardware scanner instead of CUDA's speed ordering.
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+
+def configure_torch_runtime(torch, device):
+    """Keep CPU math pools bounded and enable fast NVIDIA math where supported."""
+    try:
+        requested = int(os.environ.get("SPLASH_INFERENCE_THREADS", "4"))
+    except ValueError:
+        requested = 4
+    available_cpus = (getattr(os, "process_cpu_count", os.cpu_count)() or 1)
+    threads = max(1, min(requested, available_cpus))
+    torch.set_num_threads(threads)
+    # Inter-op work is small for this single-request, single-model worker. A single
+    # dispatcher avoids multiplying thread pools on laptops with many logical CPUs.
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        # PyTorch only allows this before the first inter-op operation; safe to keep
+        # the process's existing value if another import initialized it first.
+        pass
+    if device.startswith("cuda") and torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        if hasattr(torch, "set_float32_matmul_precision"):
+            torch.set_float32_matmul_precision("high")
+    return threads
 
 CATALOG = {
     "compact": {"repo": "dllm-hub/Qwen3-0.6B-diffusion-mdlm-v0.1", "revision": "c8d24a3f4adaeef46881b450e1bf7d1005203bd7",
@@ -150,6 +175,7 @@ def hardware():
 class DiffusionAdapter:
     def __init__(self, config):
         import torch
+        configure_torch_runtime(torch, config.get("device", "cpu"))
         # Torch 2.14 routes some eager operations through compiled Triton kernels.
         # Keep the portable eager profile independent of a local C/Python toolchain.
         if hasattr(torch, "_native"):
@@ -181,6 +207,21 @@ class DiffusionAdapter:
             kwargs["max_memory"] = {int(self.device.split(":")[1]): config.get("gpu_memory", "6GiB"), "cpu": config.get("cpu_memory", "24GiB")}
             kwargs["offload_folder"] = str(data_directory() / "offload")
         self.tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True, trust_remote_code=True)
+        self.mask_token_id = None
+        if self.key == "compact":
+            self.mask_token_id = self.tokenizer.mask_token_id
+            if self.mask_token_id is None:
+                # Some tokenizer loaders retain the vocabulary entry but fail to
+                # restore its mask-token role from the checkpoint metadata.
+                token_id = self.tokenizer.convert_tokens_to_ids("<|mask|>")
+                if token_id is not None and token_id != self.tokenizer.unk_token_id:
+                    self.tokenizer.mask_token = "<|mask|>"
+                    self.mask_token_id = self.tokenizer.mask_token_id
+            if self.mask_token_id is None:
+                raise ValueError(
+                    "The Compact checkpoint tokenizer is missing the <|mask|> token. "
+                    "Clear the custom checkpoint path and download the pinned Compact checkpoint."
+                )
         if self.key == "compact":
             # Import the pinned local module directly: its __main__ demo imports dllm,
             # which HF's static dependency scanner otherwise incorrectly requires.
@@ -233,7 +274,7 @@ class DiffusionAdapter:
                 finally:
                     hook.remove()
             else:
-                mask = tokenizer.mask_token_id
+                mask = self.mask_token_id
                 output = torch.full((1, ids.shape[1] + max_tokens), mask, dtype=torch.long, device=self.device)
                 output[:, :ids.shape[1]] = ids
                 # Blockwise confidence-based masked diffusion; prompt tokens stay fixed.
@@ -367,6 +408,12 @@ class ModelService:
         self.endpoint = None
         self.endpoint_request = None
 
+    async def request(self, method, path, **kwargs):
+        return await OllamaClient().request(method, path, **kwargs)
+
+    async def inspect(self):
+        return await OllamaClient().inspect()
+
     def invalidate(self):
         self.sequence += 1
         self.cancel.set()
@@ -401,17 +448,23 @@ class ModelService:
                     raise RuntimeError("Inference exceeded ten minutes. Use a smaller model or shorter input.")
                 await asyncio.sleep(.05)
 
-    async def load(self, config):
+    async def load(self, config, *, explicit_ollama_load=False):
         self.invalidate()
         async with self.lock:
-            external = config.get('source') == 'endpoint'
-            self.status = {"state": "loading", "engine": "endpoint" if external else "diffusion", "model": config["model"], "config": config}
+            external = config.get('source') in ('endpoint', 'ollama')
+            self.status = {"state": "loading", "engine": config.get("source") if external else "diffusion", "model": config["model"], "config": config}
             try:
                 self.endpoint = None
                 if external:
                     from backend.endpoint_model import EndpointModel
                     await self.stop_worker()
-                    adapter = EndpointModel(config)
+                    if config.get('source') == 'ollama':
+                        from backend.ollama_model import OllamaModel
+                        adapter = OllamaModel(config)
+                        if explicit_ollama_load:
+                            await adapter.load()
+                    else:
+                        adapter = EndpointModel(config)
                     result = await adapter.verify()
                     self.endpoint = adapter
                     self.status['config'] = adapter.config
@@ -427,7 +480,7 @@ class ModelService:
 
     async def generate(self, messages, max_tokens=256, priority=0):
         if self.status["state"] != "ready":
-            raise RuntimeError("No diffusion model is ready. Open Model settings to load and check one.")
+            raise RuntimeError("No model is ready. Open Model settings to load and check one.")
         if priority > self.active_priority:
             raise InterruptedError("Background inference deferred while editing")
         self.invalidate()

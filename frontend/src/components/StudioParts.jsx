@@ -101,7 +101,7 @@ export function SystemPromptDialog({project,close,guard,busy,onSaved}) {
   </Dialog>
 }
 export function ModelDialog({runtime,close,guard,refresh}) {
-  const endpointActive = runtime?.runtime.config?.source === 'endpoint'
+  const endpointActive = ['endpoint','ollama'].includes(runtime?.runtime.config?.source)
   const saved = endpointActive ? {} : runtime?.runtime.config || {}
   const [endpoints,setEndpoints] = useState(runtime?.endpoints || [])
   const [endpointUrl,setEndpointUrl] = useState(endpointActive ? runtime.runtime.config.base_url : '')
@@ -139,6 +139,7 @@ export function ModelDialog({runtime,close,guard,refresh}) {
     try { await api('/models/load',{method:'POST',body}) } finally { await refresh() }
   })
   return <Dialog title="Local intelligence, your hardware" close={close} wide>
+    <OllamaControls guard={guard} refresh={refresh} runtime={runtime}/>
     <section className="model-source">
       <h3>Use an existing model endpoint</h3>
       <p>Already running Project Maya, vLLM, llama.cpp, or another OpenAI-compatible server? Reuse its model without loading a second set of weights in Splash.</p>
@@ -210,4 +211,22 @@ export function ModelDialog({runtime,close,guard,refresh}) {
     </div>
     <small className="muted">Data location: {runtime?.data_directory}</small>
   </Dialog>
+}
+
+function OllamaControls({guard,refresh,runtime}) {
+  const [info,setInfo]=useState(null), [model,setModel]=useState(''), [confirmed,setConfirmed]=useState(false), [busy,setBusy]=useState(false)
+  const check=async()=>{const value=await api('/models/ollama');setInfo(value)}
+  const run=operation=>guard(async()=>{setBusy(true);try{await operation();await refresh();await check()}finally{setBusy(false)}})
+  return <section className="model-source"><h3>Ollama catalog & local indexing</h3>
+    <p>Check local Ollama for installed models and a recommendation based on free memory. Downloading saves weights; starting a model allocates memory.</p>
+    <button disabled={busy} onClick={()=>run(check)}>Check Ollama & available memory</button>
+    {info&&<><p role="status">{info.ollama.available?'Ollama is available.':info.ollama.error} {info.recommendation_error}</p>
+      <label className="field">Model<select value={model} onChange={e=>setModel(e.target.value)}><option value="">Recommended: {info.recommended_model||'none fits'}</option>{info.catalog.map(item=><option key={item.id} value={item.id}>{item.name} · {item.ram_gb} GB estimated memory{item.downloaded?' · downloaded':''}{item.compatible?'':' · insufficient free memory'}</option>)}</select></label>
+      <button disabled={busy||!(model||info.recommended_model)} onClick={()=>run(()=>api('/models/ollama/download',{method:'POST',body:{model:model||info.recommended_model}}))}>Download selected model</button>
+      <button disabled={busy} onClick={()=>run(()=>api('/models/ollama/download',{method:'POST',body:{model:info.ollama.embedding_model}}))}>Download EmbeddingGemma for indexing</button>
+      <label className="toggle"><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>I want to start this model in Ollama. Other AI servers may already use memory.</label>
+      <button disabled={busy||!confirmed||!(model||info.recommended_model)||runtime?.runtime.state==='loading'} onClick={()=>run(()=>api('/models/ollama/load',{method:'POST',body:{model:model||info.recommended_model,automatic:!model,confirm_separate_model:true}}))}>Start selected model</button>
+      <p className="muted">Use the existing-endpoint controls below to reuse a loaded model. Memory estimates cannot guarantee that every context length fits.</p>
+    </>}
+  </section>
 }

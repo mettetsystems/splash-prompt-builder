@@ -25,7 +25,8 @@ class MemoryTests(unittest.TestCase):
         self.cuda.mem_get_info.return_value = (8 * 2**30, 32 * 2**30)
         self.cuda.get_device_name.return_value = 'Test 5090'
         self.cuda.get_device_capability.return_value = (12, 0)
-        self.torch = SimpleNamespace(cuda=self.cuda, float32='float32', float16='float16', bfloat16='bfloat16')
+        self.torch = SimpleNamespace(set_num_threads=Mock(), set_num_interop_threads=Mock(),
+                                     backends=Mock(), cuda=self.cuda, float32='float32', float16='float16', bfloat16='bfloat16')
         checkpoint = patch('backend.checkpoints.inspect_local', return_value={'weight_gb': 32.51})
         self.inspect = checkpoint.start()
         self.addCleanup(checkpoint.stop)

@@ -177,7 +177,7 @@ class Agents:
         catalog = CATALOG.get(status.get("model"), {})
         source = config.get("source", "catalog")
         return {"model":status.get("model"), "model_source":source,
-                "model_endpoint":config.get('base_url') if source == 'endpoint' else None,
+                "model_endpoint":config.get('base_url') if source in ('endpoint', 'ollama') else None,
                 "model_repository":config.get("repo") or (catalog.get("repo") if source == "catalog" else None),
                 "model_revision":config.get("revision") or (catalog.get("revision") if source == "catalog" else None),
                 "device":config.get("device"), "steps":config.get("steps"), "quality_mode":config.get('quality_mode','quality'), "created":now()}
@@ -202,7 +202,19 @@ class Agents:
             context = await self.tools.call(p, "search_context", {"query": text, "limit": 16})
         except Exception:
             context = retrieve_context(p, text, 16)
-        passages = context.get("passages", [])
+        passages = list(context.get("passages", []))
+        # Vector retrieval is opt-in per project. Failure leaves lexical context
+        # and the structured review pipeline available.
+        from backend.local_index import index_status, retrieve
+        if (await asyncio.to_thread(index_status, self.store.directory, pid))["ready"]:
+            try:
+                vectors = await retrieve(self.store.directory, pid, text, self.models)
+                valid_ids = {document['id'] for document in p['documents']}
+                seen = {(item['document_id'], item['page'], item['text']) for item in passages}
+                passages.extend(item for item in vectors if item['document_id'] in valid_ids
+                    and (item['document_id'], item['page'], item['text']) not in seen)
+            except Exception:
+                pass
         references = []
         def reference(kind, name, content, **metadata):
             if content.strip():
