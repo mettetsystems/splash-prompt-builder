@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.storage import Conflict, diff, now, uid
 from backend.models import CATALOG, hardware
+from backend.endpoints import discover_endpoints, probe_endpoint, endpoint_config, normalize_url
 from backend.agents import apply_proposals, library_defaults, operator_note
 from backend.research import parse_document
 from backend.checkpoints import dependency_status, source_spec, inspect_local, inspect_remote, fetch_checkpoint, downloaded_source
@@ -104,6 +105,7 @@ class LoadModel(Input):
     offload: bool = False
     gpu_memory: str = Field(default="6GiB", pattern=r"^[1-9][0-9]?GiB$")
     cpu_memory: str = Field(default="24GiB", pattern=r"^[1-9][0-9]{0,2}GiB$")
+    confirm_separate_model: bool = False
 
     @model_validator(mode="after")
     def compatible_options(self):
@@ -118,6 +120,16 @@ class Download(Input):
     model: Literal["compact", "dream", "llada"]
     repo: str = Field(default="", max_length=300)
     revision: str = Field(default="", max_length=200)
+
+
+class EndpointScan(Input):
+    base_url: str = Field(default='', max_length=2048)
+
+
+class EndpointSelection(Input):
+    base_url: str = Field(max_length=2048)
+    model: str = Field(min_length=1, max_length=500)
+    context: int = Field(default=4096, ge=1024, le=32768)
 
 
 class InspectCheckpoint(Download):
@@ -697,8 +709,40 @@ async def models(request: Request):
     state = services(request)
     catalog = [{"id": key, **info, "downloaded": (state.store.directory / "models" / key / "config.json").is_file()} for key, info in CATALOG.items()]
     return {"catalog": catalog, "runtime": state.models.status, "downloads": state.downloads,
+            "endpoints": getattr(state, 'endpoints', []),
             "mcp": {"state": state.tools.state, "error": state.tools.error}, "data_directory": str(state.store.directory),
             "dependencies": dependency_status()}
+
+
+@router.post('/models/endpoints/scan')
+async def scan_endpoints(data: EndpointScan, request: Request):
+    urls = [normalize_url(data.base_url)] if data.base_url.strip() else None
+    found = await asyncio.to_thread(discover_endpoints, urls)
+    services(request).endpoints = found
+    return {'endpoints': found}
+
+
+@router.post('/models/endpoint')
+async def select_endpoint(data: EndpointSelection, request: Request):
+    state = services(request)
+    if state.models.status['state'] == 'loading':
+        raise Conflict('A model connection is already being prepared.')
+    base = normalize_url(data.base_url)
+    found = await asyncio.to_thread(probe_endpoint, base)
+    if not found:
+        raise ValueError('No compatible model server responded at that address.')
+    config = endpoint_config(found, data.model, data.context)
+    # The explicit choice survives a connection failure during the switch.
+    # Otherwise a restart could silently restore the old local checkpoint.
+    state.store.set_config('model', config)
+    state.models.status = {'state': 'loading', 'model': data.model, 'engine': 'endpoint', 'config': config}
+    # Finish switching under ModelService's lock and release only Splash's own
+    # weights. Never ask the external server to load/unload or stop a model.
+    result = await state.models.load(config)
+    if result['state'] != 'ready':
+        raise ValueError(result.get('error') or 'Could not connect to model endpoint.')
+    state.store.set_config('model', state.models.status['config'])
+    return result
 
 
 @router.post("/models/inspect")
@@ -741,11 +785,14 @@ async def load_model(data: LoadModel, request: Request):
     state = services(request)
     if state.models.status["state"] == "loading":
         raise Conflict("A model is already loading.")
+    state.endpoints = await asyncio.to_thread(discover_endpoints)
+    if (state.endpoints or state.models.status.get('config', {}).get('source') == 'endpoint') and not data.confirm_separate_model:
+        raise Conflict('A local model server is running. Use its endpoint, or confirm loading a separate model in Model & hardware.')
     dependencies = dependency_status()
     missing = dependencies["missing"] + (["bitsandbytes"] if data.quantize and not dependencies["packages"]["bitsandbytes"] else [])
     if missing:
         raise ValueError(f"Missing model dependencies in {dependencies['python']}: {', '.join(missing)}. Run python scripts/setup.py --install-models{' --quantize' if data.quantize else ''} in the Splash project folder, then restart Splash.")
-    config = data.model_dump(exclude_none=True)
+    config = data.model_dump(exclude_none=True, exclude={'confirm_separate_model'})
     if data.source == "huggingface":
         if not data.repo.strip():
             raise ValueError("Enter the Hugging Face repository to load.")

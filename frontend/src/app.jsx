@@ -115,7 +115,7 @@ export default function App() {
       socket.onerror = () => socket.close()
     }
     connect()
-    let previousJobs = null
+    let previousJobs = {}
     const poll = setInterval(async () => {
       try {
         const result = await api(`/projects/${id}/jobs`)
@@ -243,9 +243,11 @@ export default function App() {
   const enrichmentStatus = running.includes('refine') ? 'Enriching your prompt…'
     : editor.dirty || editor.saving ? 'Updating from your draft…'
     : openConflicts.length ? 'Conflicting directions need your review in Document comments'
+    : project?.enrichment_review && project.enrichment_review.version===editor.version && project.enrichment_review.quality.status==='needs_attention' ? 'Review needs attention · see the review report below'
     : preview.ids.length ? 'Live enrichment ready'
     : jobs.refine?.status === 'error' ? 'Enrichment failed · see the error above'
     : project?.processing?.settled?.version===editor.version ? 'Your chosen wording is saved · waiting for new input'
+    : jobs.refine?.status === 'canceled' && jobs.refine.version===editor.version ? 'Review interrupted · use Refine entire prompt to retry'
     : jobs.refine?.status === 'complete' && jobs.refine.version===editor.version ? jobs.refine.reason || 'Reviewed · waiting for new input'
     : modelReady ? automatic ? sampler.current?.decision('refine',{context:refineContext}).reason || 'Waiting for a complete thought…' : 'Live enrichment paused' : 'Load a model to enrich this prompt'
 
@@ -259,9 +261,11 @@ export default function App() {
       <div className="sidebar-bottom"><button className="text-button" onClick={() => { setError(''); setDialog({ kind: 'system-prompts' }) }}>Prompt library</button><button className="text-button" onClick={() => setDialog({ kind: 'models' })}>⚙ Model & hardware</button><button className="text-button" onClick={() => setDialog({ kind: 'import-file', agent: 'splash' })}>↗ Import project archive</button><span className="local-label"><i /> Saved on this computer</span></div>
     </aside>
     <main className="main-area">
-      <header className="topbar"><span className="breadcrumb">PROMPT WORKSPACE {agent && <>/ <b>{agent.id}</b></>}</span><button className="model-pill" onClick={() => setDialog({ kind: 'models' })}><i className={modelReady ? 'ready' : ''} />{modelReady ? runtime.runtime.model + ' · local diffusion' : runtime?.runtime.state === 'loading' ? 'Loading model…' : 'Choose a local model'} ↗</button></header>
+      <header className="topbar"><span className="breadcrumb">PROMPT WORKSPACE {agent && <>/ <b>{agent.id}</b></>}</span><button className="model-pill" onClick={() => setDialog({ kind: 'models' })}><i className={modelReady ? 'ready' : ''} />{modelReady ? runtime.runtime.model + (runtime.runtime.engine==='endpoint'?' · existing endpoint':' · local diffusion') : runtime?.runtime.state === 'loading' ? 'Loading model…' : 'Choose a local model'} ↗</button></header>
       {error && <div className="alert error" role="alert">{error}<button onClick={() => setError('')} aria-label="Dismiss error">×</button></div>}
       {notice && <div className="alert" role="status">{notice}<button onClick={() => setNotice('')} aria-label="Dismiss notice">×</button></div>}
+      {runtime?.runtime.state === 'error' && <div className="alert error" role="alert"><span><strong>Model unavailable.</strong> {runtime.runtime.error}</span><button onClick={() => setDialog({ kind: 'models' })}>Model & hardware</button></div>}
+      {runtime?.runtime.notice && <div className="alert" role="status">{runtime.runtime.notice}<button onClick={() => setDialog({ kind: 'models' })}>{runtime.endpoints?.length?'Choose model endpoint':'Model & hardware'}</button></div>}
       {!project ? <section className="welcome"><div className="welcome-hero"><div className="welcome-copy"><p className="eyebrow">GIVE YOUR IDEAS ROOM TO GROW</p><h1>A sharper prompt.<br /><span className="brand-accent">A clearer direction.</span></h1><p>Start with what you mean. Explore what it could become.<br />Keep every version that brought you here.</p></div><div className="welcome-art" aria-hidden="true"><span className="brand-art"><img src={splashLogo} width="1024" height="1024" alt="" /></span><span className="art-caption">A little clarity. A new possibility.</span></div></div><div className="agent-grid">{AGENTS.map(a => <button key={a.id} className="agent-card" onClick={() => beginNew(null, null, a.id)}><span className="agent-icon">{a.icon}</span><h3>{a.id}</h3><strong>{a.label}</strong><p>{a.description}</p><span className="card-arrow">Start a project ↗</span></button>)}</div><p className="welcome-note">One agent per project · Local history · You approve every merge</p></section> : <>
         <section className="project-heading"><div><p className="eyebrow">{agent.label.toUpperCase()}</p><h1>{project.title}</h1><p>{project.origin ? `Imported from “${project.origin.title}” · ` : ''}{project.revisions.filter(r => r.kind === 'main').length} main versions · Started {new Date(project.created).toLocaleDateString()}</p></div><div className="project-actions"><button onClick={() => { setError(''); setDialog({ kind: 'system-prompts' }) }}>System prompts</button><button onClick={() => setDialog({ kind: 'rename', title: project.title })}>Rename</button><button onClick={() => beginNew(project)}>Import as new</button><button onClick={() => setDialog({ kind: 'export' })}>Export ↗</button><button className="text-button danger" onClick={() => setDialog({ kind: 'delete' })}>Delete</button></div></section>
         <div className="collaborative-workspace"><section className="editor-shell"><div className="editor-toolbar"><span><span className="status-dot" /> Main stays safe while you explore</span><span className="muted">{connection === 'connected' ? 'Connected locally' : 'Reconnecting…'}</span></div>

@@ -83,3 +83,11 @@ test('hardware latency can lengthen quiet time without bypassing content boundar
   sampler.observe('Use Pyth',{},9000)
   assert.equal(sampler.decision('refine',{now:60000,latency:8000}).ready,false)
 })
+
+test('slow inference cannot delay the next eligible draft by minutes',()=>{
+  const sampler=new ContentSampler('Use Python.',0)
+  assert.equal(sampler.decision('refine',{now:9999,latency:131002}).ready,false)
+  assert.equal(sampler.decision('refine',{now:10000,latency:131002}).ready,true)
+  sampler.observe('Use Pyth',{},10000)
+  assert.equal(sampler.decision('refine',{now:20000,latency:131002}).ready,false)
+})

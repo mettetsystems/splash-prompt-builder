@@ -62,7 +62,9 @@ export class ContentSampler {
       this.boundaries.set(kind,cached)
     }
     const boundary=cached.boundary
-    const wait=Math.max(boundary.delay||0, Number.isFinite(latency)?latency:0)
+    // Slow inference must not turn the next typing pause into minutes of
+    // inactivity. In-flight jobs already prevent duplicate dispatches.
+    const wait=Math.max(boundary.delay||0, Number.isFinite(latency)?Math.min(latency,10000):0)
     return {...boundary, ready:boundary.ready&&now-this.editedAt>=wait&&now-(this.requests.get(kind)??-Infinity)>=interval}
   }
   mark(kind, context='', now=Date.now()) {

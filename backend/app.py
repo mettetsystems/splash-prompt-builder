@@ -22,6 +22,7 @@ from backend.models import ModelService
 from backend.mcp_host import ToolHost
 from backend.agents import Agents
 from backend.api import router, project_socket
+from backend.endpoints import discover_endpoints
 
 MAX_PROMPT_LENGTH = 8000
 MAX_MESSAGE_BYTES = 100_000
@@ -40,10 +41,23 @@ async def lifespan(application):
     state.background = set()
     state.tools.start()
     configured = state.store.config("model")
-    if configured:
+    state.endpoints = []
+    if configured and os.environ.get("SPLASH_SKIP_MODEL_LOAD") == "1":
+        state.models.status.update(model=configured["model"], config=configured,
+            notice="Automatic model loading skipped for this session. Load a model in Model & hardware when ready.")
+    elif configured and configured.get('source') == 'endpoint':
         task = asyncio.create_task(state.models.load(configured))
         state.background.add(task)
         task.add_done_callback(state.background.discard)
+    else:
+        state.endpoints = await asyncio.to_thread(discover_endpoints)
+        if state.endpoints:
+            state.models.status.update(config=configured or {},
+                notice='A local model server is running. Would you like to use its endpoint? Open Model & hardware to choose. Automatic local loading is paused.')
+        elif configured:
+            task = asyncio.create_task(state.models.load(configured))
+            state.background.add(task)
+            task.add_done_callback(state.background.discard)
     yield
     for task in list(state.jobs.values()) + list(state.background):
         task.cancel()

@@ -910,7 +910,9 @@ summary {
   overflow-wrap:anywhere
 }
 .alert>button:last-child {
-  margin-left:auto
+  margin-left:auto;
+  flex-shrink:0;
+  white-space:nowrap
 }
 .alert.error {
   background:var(--danger-bg);

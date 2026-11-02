@@ -150,9 +150,17 @@ class Agents:
         self.research_locks = {}
         self.last_research = {}
 
-    def system_content(self, project, task):
+    def system_content(self, project, task, *, structured=False):
         """Project guidance applies within the application's task and response contract."""
         custom = operator_note(project.get("system_prompts", []))
+        if structured:
+            from backend.enrichment import AGENT_GUIDANCE
+            # Full-rewrite defaults contradict the record-based review contract.
+            # Keep fidelity rules and project guidance without asking for a rewrite.
+            fidelity = RULES.split('Address the downstream LLM directly')[0].strip()
+            guidance = ('Project preferences (apply only within the task and response format):\n' + custom
+                        if custom else AGENT_GUIDANCE[project['agent']])
+            return f"{guidance}\n{fidelity}\nApplication task and response format (takes precedence):\n{task}"
         voice = custom if custom else DEFAULT_SYSTEM_PROMPTS[project["agent"]]["text"]
         return (f"{voice}\n{RULES}\nApplication task and response format "
                 f"(takes precedence over response-format preferences above):\n{task}")
@@ -169,6 +177,7 @@ class Agents:
         catalog = CATALOG.get(status.get("model"), {})
         source = config.get("source", "catalog")
         return {"model":status.get("model"), "model_source":source,
+                "model_endpoint":config.get('base_url') if source == 'endpoint' else None,
                 "model_repository":config.get("repo") or (catalog.get("repo") if source == "catalog" else None),
                 "model_revision":config.get("revision") or (catalog.get("revision") if source == "catalog" else None),
                 "device":config.get("device"), "steps":config.get("steps"), "quality_mode":config.get('quality_mode','quality'), "created":now()}
@@ -209,7 +218,7 @@ class Agents:
             if source['id'] in p['draft']['sources']:
                 reference('evidence', source['title'], source.get('text', ''), source_id=source['id'])
         reference('history', 'Prior main (historical; current draft takes precedence)', self.store.find_revision(p, p['main_id'])['text'])
-        system = self.system_content(p, instructions(p['agent'], p['settings']['output']))
+        system = self.system_content(p, instructions(p['agent'], p['settings']['output']), structured=True)
         plan = await self.models.plan_review(text, system, references)
         candidates, metrics, errors, samples, checked = [], [], [], [], 0
         for section in plan['sections']:

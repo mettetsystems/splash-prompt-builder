@@ -14,7 +14,7 @@ This release includes real diffusion inference, a persistent MCP tool host, and 
 
 Splash is licensed under the **GNU General Public License v3.0 only** (`GPL-3.0-only`). See [LICENSE](LICENSE) for the full terms. Third-party components and model checkpoints retain their respective licenses; bundled attribution is preserved in [backend/vendor/NOTICE](backend/vendor/NOTICE) and [backend/vendor/LICENSE](backend/vendor/LICENSE).
 
-You need **Python 3.11 or later**, **Node.js 22.12 or later with npm**, and a current browser. Initial setup installs the editor, builds the frontend, and **installs PyTorch and the model adapters automatically** for the detected hardware. It verifies imports and a small device calculation before reporting success. Model-runtime packages can be large; an internet connection is required for packages not already cached. Model checkpoints remain separate downloads. Use `--profile editor` only if you intentionally want to skip local inference dependencies.
+You need **Python 3.11 or later**, **Node.js 22.12 or later with npm**, and a current browser. Setup first checks for existing local model servers and offers to reuse one. Reusing an endpoint installs the editor without PyTorch or local model adapters. Otherwise setup installs the editor, builds the frontend, and **installs PyTorch and the model adapters automatically** for the detected hardware. It verifies imports and a small device calculation before reporting success. Model-runtime packages can be large; an internet connection is required for packages not already cached. Model checkpoints remain separate downloads. Use `--profile editor` to skip local inference dependencies.
 
 From the repository directory on Linux or macOS:
 
@@ -40,6 +40,14 @@ python3 scripts/start.py --port 43828 --data-dir .local-data
 
 On Windows, replace `python3` with `py -3`. These launchers always bind to loopback. Splash is a single-user local application, not an authenticated public service.
 
+To open the editor while another application is using your GPU, skip the saved model for this session:
+
+```sh
+python3 scripts/start.py --no-model
+```
+
+This preserves the saved model configuration and all projects. You can load a model later through **Model & hardware**. Restart an already running instance first; launcher options do not change an existing server. Direct Uvicorn launches can set the environment variable `SPLASH_SKIP_MODEL_LOAD=1` for the same behavior.
+
 To install a double-clickable Mac app instead of running from the repository, see [macOS application](#macos-application).
 
 ### Stop Splash
@@ -57,6 +65,23 @@ On Windows, use `py -3 scripts/stop.py`. For a different port or a slower shutdo
 The script targets only your user account's Splash server from this checkout on the selected port. It requests graceful shutdown and waits for the server, inference worker, and tool processes to exit. Saved projects, drafts, and model downloads are preserved. If no matching server is found, it exits without stopping anything; it never kills unrelated Python processes or force-kills a slow shutdown. A timeout or permission failure returns a nonzero exit code and explains what remains pending. Closing a browser tab does not stop the server.
 
 Linux and macOS support the normal launcher and direct Uvicorn commands, including `--reload`. On Windows, start with the updated `scripts/start.py`; console-break delivery requires a shared console session. For servers in a separate Windows console, older launches, or direct Uvicorn launches, use Ctrl+C in the original terminal. Linux shutdown is tested; Windows console handling and macOS remain unverified on those platforms. The script uses the existing `psutil` dependency and falls back to the checkout's `.venv` if needed; it does not load model weights.
+
+### Reuse an existing model endpoint
+
+Setup scans loopback ports **11434, 1234, 8000, 8080, and 5000** using read-only model-list requests. When it finds a server, the terminal asks whether to use one of its models, install a separate local runtime, or install just the editor. No detection request generates text, downloads weights, or loads a model. Without terminal input, discovery of a server defaults to editor-only installation until you choose in the app; `--local-model` explicitly opts into local runtime installation.
+
+For Project Maya, vLLM, llama.cpp, or another server exposing OpenAI-compatible model listings and chat completions, supply its actual URL and served model ID:
+
+```sh
+python3 scripts/setup.py --endpoint http://127.0.0.1:8000/v1 --endpoint-model MODEL_ID
+python3 scripts/start.py
+```
+
+The selection is saved in the application-data directory. `--endpoint-context 4096` sets the request budget. For a different data directory, pass `--data-dir` to **both** setup and startup. Set `SPLASH_ENDPOINT_URLS` to comma-separated loopback URLs to include nonstandard ports in automatic scans. Authenticated servers use `SPLASH_ENDPOINT_API_KEY` in the setup/server environment; keys are not written into project settings. `--check --json` reports detected endpoints without prompting or saving a selection; with automatic profile selection and an existing server, it checks editor dependencies without a GPU execution test.
+
+In **Model & hardware → Use an existing model endpoint**, enter a URL (or leave it empty to scan), then choose **Use existing endpoint** beside the desired model. Selecting it releases Splash's own loaded weights and uses `/v1/chat/completions` for generation. It does not stop or reconfigure the other server. A saved endpoint that is unavailable produces an error rather than falling back to local weights. Starting Splash with a saved local model pauses automatic loading when another server is detected and asks you to choose; manually loading separate weights requires explicit confirmation and still uses the CUDA free-memory preflight.
+
+For Ollama, discovery uses its [running-model inventory](https://docs.ollama.com/api/ps); for LM Studio it uses [loaded language-model instances](https://lmstudio.ai/docs/developer/rest/list), avoiding models that only exist on disk. Generic OpenAI-compatible listings do not necessarily expose loaded state, so the UI says when the server might load a model on first use. Detection cannot find every custom port, non-HTTP AI process, or authenticated server. Reuse avoids a second set of Splash weights but does not guarantee against OOM: request caches and other clients still consume memory. Endpoint context accounting uses a conservative UTF-8 byte estimate because the server's tokenizer is not available locally. No API generation is sent until a project requests it.
 
 ### Hardware profiles and dependency checks
 
@@ -170,6 +195,8 @@ Open **Model & hardware**:
 4. Click **Load & run check**. The worker loads actual weights and runs a generation. The dialog reports the result, latency, and peak allocated GPU memory. The selected configuration is restored at the next application start.
 
 All projects use this one model; agents supply different instructions and tool permissions. Changing the selected model replaces the worker's loaded model. Hugging Face downloads use pinned commit revisions and reuse partial downloads when retried. Downloaded models live under the application's `models/` directory. Checkpoints from your own directory are used in place.
+
+Before loading CUDA weights, the worker checks the selected device's **currently free** memory against an estimate from checkpoint size, weight precision, and loading headroom. NF4 estimates include unquantized layers and quantization overhead; offload checks the configured GPU budget plus headroom. If memory is insufficient, loading stops before reading weights and the workspace displays an explanation. Failed loads also release partial models and PyTorch's unused GPU cache before reporting the error. The editor remains usable, and Splash never stops another application's GPU process or switches models automatically. These are estimates, not guarantees: long contexts, generation, unusual checkpoint layouts, or another process allocating memory can still cause an OOM.
 
 ### Hugging Face and local repositories
 
@@ -491,9 +518,11 @@ The earlier deterministic mock remains isolated in `backend/engine.py` and legac
 | Hub download fails or says access denied | Check the repository ID/revision, connection, and local Hub login or `HF_TOKEN`. Gated repositories require prior access. Retry the download to reuse partial files. |
 | Checkpoint check reports wrong architecture or LFS pointers | Choose the matching adapter and a complete weights directory. Pull Git LFS weights or download through Hugging Face. A Git source repository alone is not a model checkpoint. |
 | CUDA unavailable or GPU scan fails | Run `nvidia-smi` in a normal local terminal. A sandbox permission failure does not prove the GPU or driver is absent. Match the runtime to the architecture. |
-| GPU out of memory | Reduce context, choose Compact, or try the measured Dream NF4 profile with bitsandbytes. Check other GPU processes. Offload is experimental and slower. |
+| Not enough free GPU memory / CUDA out of memory during loading | Inspect `nvidia-smi`: a 32 GB card can have only 8 GB free if another model server occupies it. The CUDA preflight reports free and estimated required memory before loading weights. Free memory in the other application, choose Compact or another device, then retry in Model & hardware. Use `python3 scripts/start.py --no-model` to open the editor without auto-loading. Reducing context alone does not shrink model weights. Offload is experimental and slower. |
+| CUDA out of memory during generation | Reduce the context budget or choose a smaller model, and check competing GPU processes. Passing the load check does not guarantee every prompt fits. Failed generation releases transient allocations while preserving the loaded model and your saved drafts. |
 | Model import or custom-code error | Use the pinned requirements and matching catalog checkpoint. LLaDA requires the bundled eager-mask/RoPE compatibility path. Do not mix a random Transformers major version into the tested environment. |
 | A rewrite is rejected for omitted content | The draft is intact. Try another model or diffusion schedule, or refine a smaller task. Review semantic constraints even when the guard passes. |
+| Review finishes without usable output | Check Document comments and the enrichment report for withheld responses. Structured reviews use a dedicated response contract rather than the full-rewrite defaults. Comment reviews reject truncated output and retry once with a larger budget; failed responses can be inspected in the comments rail. A completed job with review errors is not a successful review, and an explicit no-changes result does not certify prompt quality. |
 | Research returns 429, CAPTCHA, or no results | Other providers may continue. Wait for backoff, try a focused query, or supply a public source URL. Scholar blocking is not bypassed. |
 | MCP tools are unavailable | Local editing still works. The host retries server startup automatically; inspect backend stderr and verify the pinned MCP dependency in the same virtual environment. |
 | Unsaved changes or a stale-merge error | Resolve the displayed recovery/conflict choice, save the draft, and open a new merge review. Never force an old review onto a new revision. |

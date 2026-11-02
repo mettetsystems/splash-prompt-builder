@@ -101,7 +101,13 @@ export function SystemPromptDialog({project,close,guard,busy,onSaved}) {
   </Dialog>
 }
 export function ModelDialog({runtime,close,guard,refresh}) {
-  const saved = runtime?.runtime.config || {}
+  const endpointActive = runtime?.runtime.config?.source === 'endpoint'
+  const saved = endpointActive ? {} : runtime?.runtime.config || {}
+  const [endpoints,setEndpoints] = useState(runtime?.endpoints || [])
+  const [endpointUrl,setEndpointUrl] = useState(endpointActive ? runtime.runtime.config.base_url : '')
+  const [endpointContext,setEndpointContext] = useState(endpointActive ? runtime.runtime.config.context : 4096)
+  const [separateModel,setSeparateModel] = useState(false)
+  useEffect(()=>setEndpoints(runtime?.endpoints||[]),[runtime?.endpoints])
   const [hardware,setHardware] = useState(null)
   const [working,setWorking] = useState(false)
   const [inspection,setInspection] = useState(null)
@@ -129,12 +135,27 @@ export function ModelDialog({runtime,close,guard,refresh}) {
     if (config.source==='huggingface') setConfig(previous=>({...previous,repo:result.repo,revision:result.revision}))
   })
   const load = () => run(async()=>{
-    const body = {...config,path:config.source==='local'?config.path:'',repo:config.source==='huggingface'?config.repo:'',revision:config.source==='huggingface'?config.revision:''}
-    await api('/models/load',{method:'POST',body})
-    await refresh()
+    const body = {...config,path:config.source==='local'?config.path:'',repo:config.source==='huggingface'?config.repo:'',revision:config.source==='huggingface'?config.revision:'',confirm_separate_model:separateModel}
+    try { await api('/models/load',{method:'POST',body}) } finally { await refresh() }
   })
   return <Dialog title="Local intelligence, your hardware" close={close} wide>
-    <p className="muted">One diffusion model serves every project. Choose an adapter family, then a recommended checkpoint, Hugging Face repository, or local directory.</p>
+    <section className="model-source">
+      <h3>Use an existing model endpoint</h3>
+      <p>Already running Project Maya, vLLM, llama.cpp, or another OpenAI-compatible server? Reuse its model without loading a second set of weights in Splash.</p>
+      {endpointActive&&<p role="status">Connected endpoint: {runtime.runtime.config.base_url} · {runtime.runtime.model}</p>}
+      <label className="field">Local API URL<input value={endpointUrl} onChange={e=>setEndpointUrl(e.target.value)} placeholder="http://127.0.0.1:8000/v1" disabled={working}/></label>
+      <button disabled={working||runtime?.runtime.state==='loading'} onClick={()=>run(async()=>{const result=await api('/models/endpoints/scan',{method:'POST',body:{base_url:endpointUrl}});setEndpoints(result.endpoints);await refresh()})}>Check endpoint / scan common ports</button>
+      <label className="field">Endpoint context budget<input type="number" min={1024} max={32768} value={endpointContext} onChange={e=>setEndpointContext(Number(e.target.value))} disabled={working}/></label>
+      <p className="muted">Leave the URL empty to scan common localhost ports. Detection only reads model lists. Requests use the existing server's memory and capacity. Authentication uses SPLASH_ENDPOINT_API_KEY in the server environment.</p>
+      {(endpoints.length?endpoints:runtime?.endpoints||[]).map(endpoint=><div className="checkpoint-info" key={endpoint.base_url}>
+        <strong>{endpoint.base_url} · {endpoint.provider}</strong>
+        <small>{endpoint.loaded_only?'Only currently loaded language models are offered.':endpoint.notice}</small>
+        {!endpoint.models.length&&<p>No usable models listed. Start a model in that server or configure its API key, then check again.</p>}
+        {endpoint.models.map(model=><button key={model.id} disabled={working||runtime?.runtime.state==='loading'} onClick={()=>run(async()=>{await api('/models/endpoint',{method:'POST',body:{base_url:endpoint.base_url,model:model.id,context:endpointContext}});await refresh()})}>Use existing endpoint · {model.id}</button>)}
+      </div>)}
+    </section>
+    <h3>Or load a separate local diffusion model</h3>
+    <p className="muted">Choose an adapter family and checkpoint. This allocates additional RAM/VRAM; the free-memory check still applies.</p>
     {runtime?.runtime.error && <div className="alert error">{runtime.runtime.error}</div>}
     <div className="model-grid">{catalog.map(m=><label className={`model-card ${config.model===m.id?'chosen':''}`} key={m.id}>
       <input type="radio" name="model" disabled={working} checked={config.model===m.id} onChange={()=>change({model:m.id,path:'',repo:'',revision:'',context:m.context})}/>
@@ -177,12 +198,13 @@ export function ModelDialog({runtime,close,guard,refresh}) {
       <details><summary>Dependency setup & environment</summary><p>Run from the Splash project folder:</p><pre className="setup-command">{setupCommand}</pre><p>Check only: replace --install-models with --check.</p><small>App interpreter: {runtime?.dependencies?.python || 'Checking…'}</small>{Object.entries(runtime?.dependencies?.packages||{}).map(([name,version])=><small key={name}>{name}: {version||'not installed'}<br/></small>)}</details>
       <button disabled={working} onClick={()=>run(async()=>{setHardware(await api('/hardware'));await refresh()})}>Refresh hardware & dependencies</button>
     </div>
-    {runtime?.runtime.qualification&&<p className="muted">Last execution check: {runtime.runtime.qualification.latency_ms} ms · {runtime.runtime.qualification.peak_vram_mb??'—'} MB peak GPU allocation. This does not guarantee enrichment quality.</p>}
+    {runtime?.runtime.qualification&&<p className="muted">{endpointActive?'Endpoint connectivity verified without generation. Context budgeting uses a conservative byte estimate.':`Last execution check: ${runtime.runtime.qualification.latency_ms} ms · ${runtime.runtime.qualification.peak_vram_mb??'—'} MB peak GPU allocation.`} This does not guarantee enrichment quality.</p>}
     {downloads.length>0&&<details className="download-library"><summary>Downloaded checkpoints & transfers ({downloads.length})</summary>{downloads.map(d=><div className="checkpoint-info" key={d.id||d.model}>
       <strong>{d.repo||d.model}</strong><small>{d.stage||d.state}{d.state==='error'?`: ${d.error}`:''}</small>{d.revision&&<small>Commit: {d.revision}</small>}{d.path&&<small>{d.path}</small>}
       {d.state==='complete'&&<button disabled={working} onClick={()=>change({model:d.model,source:d.source||'catalog',repo:d.repo||'',revision:d.revision||'',path:'',context:catalog.find(m=>m.id===d.model)?.context})}>Use this checkpoint</button>}
     </div>)}</details>}
     <div className="dialog-actions">
+      <label className="toggle"><input type="checkbox" disabled={working} checked={separateModel} onChange={e=>setSeparateModel(e.target.checked)}/>I want to load a separate model even if another server is running.</label>
       {config.source!=='local'&&<button disabled={working||busyDownload||!sourceValid} onClick={()=>run(async()=>{await api('/models/download',{method:'POST',body:sourceBody()});await refresh()})}>{busyDownload?'Downloading…':config.source==='huggingface'?'Download from Hugging Face':'Download recommended checkpoint'}</button>}
       <button className="primary" disabled={working||runtime?.runtime.state==='loading'||!sourceValid||missing.length>0||busyDownload} onClick={load}>{runtime?.runtime.state==='loading'?'Loading & checking…':'Load & run check'}</button>
     </div>

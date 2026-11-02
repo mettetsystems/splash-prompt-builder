@@ -166,7 +166,8 @@ class SetupWorkflowTests(unittest.TestCase):
                 for result in reports:
                     result["python"] = str(python)
                     result["install_commands"] = deps.install_commands(root, result["profile"], result["quantize"])
-            with patch.object(setup.deps, "inspect_hardware", return_value=hw), \
+            with patch.object(setup, 'discover_endpoints', return_value=[]), \
+                 patch.object(setup.deps, "inspect_hardware", return_value=hw), \
                  patch.object(setup.deps, "node_checks", return_value=[]), \
                  patch.object(setup.deps, "probe_environment", return_value=probe()), \
                  patch.object(setup.deps, "check_dependencies", side_effect=reports) as check, \
@@ -253,7 +254,8 @@ class SetupWorkflowTests(unittest.TestCase):
     def test_check_json_has_failure_exit_code_and_never_installs(self):
         state = probe()
         state["packages"].pop("torch")
-        with patch.object(setup.deps, "check_dependencies", return_value=report(state=state)), \
+        with patch.object(setup, 'discover_endpoints', return_value=[]), \
+             patch.object(setup.deps, "check_dependencies", return_value=report(state=state)), \
              patch.object(setup.venv, "create") as create, patch.object(setup.subprocess, "run") as install, \
              contextlib.redirect_stdout(io.StringIO()) as output:
             code = setup.main(["--check", "--json"], ROOT)
@@ -263,7 +265,8 @@ class SetupWorkflowTests(unittest.TestCase):
         install.assert_not_called()
 
     def test_install_rejects_incompatible_profile_before_mutations(self):
-        with patch.object(setup.deps, "inspect_hardware", return_value=hardware([gpu()])), \
+        with patch.object(setup, 'discover_endpoints', return_value=[]), \
+             patch.object(setup.deps, "inspect_hardware", return_value=hardware([gpu()])), \
              patch.object(setup.deps, "node_checks", return_value=[]), \
              patch.object(setup.venv, "create") as create, patch.object(setup.subprocess, "run") as install, \
              contextlib.redirect_stderr(io.StringIO()):

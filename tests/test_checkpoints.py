@@ -97,6 +97,9 @@ class CheckpointTests(unittest.TestCase):
 
 class ModelSourceAPI(unittest.TestCase):
     def setUp(self):
+        for target in ('backend.app.discover_endpoints', 'backend.api.discover_endpoints'):
+            discovery = patch(target, return_value=[])
+            discovery.start(); self.addCleanup(discovery.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

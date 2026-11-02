@@ -15,6 +15,10 @@ from urllib.request import urlopen
 def port_status(port):
     """Check before starting Uvicorn, whose lifespan may already load a model."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        if os.name != 'nt':
+            # Match asyncio's POSIX listener behavior: connections in TIME_WAIT
+            # after a clean shutdown must not prevent an immediate restart.
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             listener.bind(('127.0.0.1', port))
         except OSError as exc:
@@ -36,6 +40,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=43827, help="Splash port (default: 43827)")
     parser.add_argument("--data-dir", type=Path, help="Override the platform app-data directory")
+    parser.add_argument("--no-model", action="store_true", help="Open the editor without automatically loading the saved model")
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("Port must be between 1 and 65535.")
@@ -56,6 +61,8 @@ def main(argv=None):
     if not python.exists() or not (root / "frontend/dist/index.html").exists():
         parser.error("Run python scripts/setup.py first.")
     env = dict(os.environ)
+    if args.no_model:
+        env["SPLASH_SKIP_MODEL_LOAD"] = "1"
     if args.data_dir:
         env["SPLASH_DATA_DIR"] = str(args.data_dir.expanduser().resolve())
     options = {}

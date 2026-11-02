@@ -3,6 +3,7 @@ import asyncio
 import gc
 import importlib.util
 import json
+import logging
 import multiprocessing as mp
 import os
 from pathlib import Path
@@ -10,9 +11,59 @@ import platform
 import queue
 import shutil
 import subprocess
+import sys
 import time
 
 from backend.storage import data_directory
+
+logger = logging.getLogger(__name__)
+
+
+def cuda_memory_preflight(config, torch):
+    """Estimate load headroom before reading weights; this is not a context-fit guarantee."""
+    device = config.get("device", "cpu")
+    if not device.startswith("cuda"):
+        return None
+    # Query the actual logical device in this worker, including CUDA_VISIBLE_DEVICES.
+    free, total = torch.cuda.mem_get_info(device)
+    gib = 2**30
+    if config.get("offload"):
+        from accelerate.utils import convert_file_size_to_int
+        weights = convert_file_size_to_int(config.get("gpu_memory", "6GiB"))
+        basis = "the configured GPU offload budget"
+    else:
+        from backend.checkpoints import inspect_local
+        checked = inspect_local(config["path"], config["model"])
+        metadata = json.loads((Path(config["path"]) / "config.json").read_text(encoding="utf-8"))
+        stored_dtype = str(metadata.get("dtype", metadata.get("torch_dtype", "bfloat16"))).removeprefix("torch.")
+        stored_bytes = {"float32": 4, "float64": 8, "float16": 2, "bfloat16": 2}.get(stored_dtype, 2)
+        weights = checked["weight_gb"] * 1e9
+        if not metadata.get("quantization_config"):
+            weights *= 2 / stored_bytes  # CUDA adapters use 16-bit weights.
+            if config.get("quantize"):
+                # NF4 also retains unquantized layers, scales, and loading buffers.
+                weights *= .35
+        basis = "checkpoint size and " + ("NF4 overhead" if config.get("quantize") else "16-bit weights")
+    required = int(weights + max(.75 * gib, weights * .1))
+    report = {"device": device, "free_gib": round(free / gib, 2), "total_gib": round(total / gib, 2),
+              "estimated_required_gib": round(required / gib, 2), "basis": basis}
+    if free < required:
+        raise RuntimeError(
+            f"Not enough free GPU memory on {device} ({torch.cuda.get_device_name(device)}): "
+            f"{free / gib:.1f} GiB free of {total / gib:.1f} GiB; estimated load requirement "
+            f"{required / gib:.1f} GiB including headroom, based on {basis}. "
+            "No checkpoint weights were loaded. Free memory in other GPU applications, or choose a smaller "
+            "model or another device in Model & hardware, then retry. The editor remains available. "
+            "Reducing context alone will not make the model weights fit.")
+    return report
+
+
+def release_model_memory():
+    # Run outside exception handlers: tracebacks can retain a partially built model.
+    gc.collect()
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 # Match the PCI ordering used by the hardware scanner instead of CUDA's speed ordering.
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
@@ -115,10 +166,11 @@ class DiffusionAdapter:
             raise RuntimeError("CUDA is unavailable to this process. Choose CPU or check GPU permissions/runtime.")
         if self.device == "mps" and not torch.backends.mps.is_available():
             raise RuntimeError("Metal execution is unavailable. Choose CPU.")
+        self.memory_check = cuda_memory_preflight(config, torch)
         dtype = torch.float32 if self.device == "cpu" else torch.float16
         if self.device.startswith("cuda") and torch.cuda.get_device_capability(self.device)[0] >= 8:
             dtype = torch.bfloat16
-        kwargs = dict(local_files_only=True, trust_remote_code=True, torch_dtype=dtype, attn_implementation="eager")
+        kwargs = dict(local_files_only=True, trust_remote_code=True, dtype=dtype, attn_implementation="eager")
         if config.get("quantize"):
             if not self.device.startswith("cuda"):
                 raise ValueError("NF4 requires a verified CUDA runtime in this release.")
@@ -268,18 +320,17 @@ def run_worker(inbox, outbox, cancel):
         job = inbox.get()
         if job is None:
             return
+        failure = None
         try:
             if job["op"] == "load":
                 adapter = None
-                gc.collect()
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                release_model_memory()
                 adapter = DiffusionAdapter(job["config"])
                 result = adapter.generate([{"role": "user", "content": "Rewrite as a clear instruction: Explain caching briefly."}], cancel, 64)
                 if not result["text"].strip():
                     raise ValueError("The execution check returned no text. Choose another model or diffusion schedule.")
                 result["loaded"] = True
+                result["memory_check"] = adapter.memory_check
             elif job["op"] == "sections":
                 if adapter is None:
                     raise RuntimeError("Load a diffusion model first.")
@@ -294,7 +345,13 @@ def run_worker(inbox, outbox, cancel):
                 result = adapter.generate(job["messages"], cancel, job.get("max_tokens", 256))
             outbox.put({"ok": True, **result})
         except Exception as exc:
-            outbox.put({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+            failure = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        if failure is not None:
+            if job["op"] == "load":
+                adapter = None
+            # Clear traceback-held tensors and allocator caches before reporting failure.
+            release_model_memory()
+            outbox.put(failure)
 
 
 class ModelService:
@@ -307,10 +364,14 @@ class ModelService:
         self.status = {"state": "unloaded", "model": None, "engine": "diffusion", "error": None}
         self.active_priority = 100
         self.closed = False
+        self.endpoint = None
+        self.endpoint_request = None
 
     def invalidate(self):
         self.sequence += 1
         self.cancel.set()
+        if self.endpoint_request and not self.endpoint_request.done():
+            self.endpoint_request.cancel()
 
     async def exchange(self, payload):
         if not self.process or not self.process.is_alive():
@@ -343,14 +404,25 @@ class ModelService:
     async def load(self, config):
         self.invalidate()
         async with self.lock:
-            self.status = {"state": "loading", "engine": "diffusion", "model": config["model"], "config": config}
+            external = config.get('source') == 'endpoint'
+            self.status = {"state": "loading", "engine": "endpoint" if external else "diffusion", "model": config["model"], "config": config}
             try:
-                result = await self.exchange({"op": "load", "config": config})
-                if not result["ok"]:
-                    raise RuntimeError(result["error"])
+                self.endpoint = None
+                if external:
+                    from backend.endpoint_model import EndpointModel
+                    await self.stop_worker()
+                    adapter = EndpointModel(config)
+                    result = await adapter.verify()
+                    self.endpoint = adapter
+                    self.status['config'] = adapter.config
+                else:
+                    result = await self.exchange({"op": "load", "config": config})
+                    if not result["ok"]:
+                        raise RuntimeError(result["error"])
                 self.status.update(state="ready", qualification=result, error=None)
             except Exception as exc:
                 self.status.update(state="error", error=str(exc))
+                logger.error("Model load failed; the editor remains available: %s", exc)
         return self.status
 
     async def generate(self, messages, max_tokens=256, priority=0):
@@ -364,7 +436,11 @@ class ModelService:
             if ticket != self.sequence:
                 raise InterruptedError("Generation superseded")
             self.active_priority = priority
-            task = asyncio.create_task(self.exchange({"op": "generate", "messages": messages, "max_tokens": max_tokens}))
+            external = self.endpoint is not None
+            task = asyncio.create_task(self.endpoint.generate(messages, max_tokens) if external else
+                self.exchange({"op": "generate", "messages": messages, "max_tokens": max_tokens}))
+            if external:
+                self.endpoint_request = task
             try:
                 result = await asyncio.shield(task)
                 if ticket != self.sequence:
@@ -374,10 +450,16 @@ class ModelService:
                 self.status["last_generation"] = {k:v for k,v in result.items() if k != "text"}
                 return result
             except asyncio.CancelledError:
-                self.cancel.set()
-                await task  # Drain the worker result before another request owns the queue.
+                if external:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                else:
+                    self.cancel.set()
+                    await task  # Drain the worker result before another request owns the queue.
                 raise
             finally:
+                if self.endpoint_request is task:
+                    self.endpoint_request = None
                 self.active_priority = 100
 
     async def sections(self, text, system, suffix="", max_tokens=256):
@@ -391,6 +473,10 @@ class ModelService:
         if self.status["state"] != "ready":
             raise RuntimeError("Load a diffusion model first.")
         async with self.lock:
+            if self.endpoint:
+                if payload['op'] == 'sections':
+                    return self.endpoint.sections(payload['text'], payload['system'], payload['suffix'], payload['max_tokens'])
+                return self.endpoint.plan_review(payload['text'], payload['system'], payload['references'])
             task = asyncio.create_task(self.exchange(payload))
             try:
                 result = await asyncio.shield(task)
@@ -401,11 +487,7 @@ class ModelService:
                 raise RuntimeError(result["error"])
             return result
 
-    async def close(self):
-        if self.closed:
-            return
-        self.closed = True
-        self.invalidate()
+    async def stop_worker(self):
         if self.process and self.process.is_alive():
             self.inbox.put(None)
             await asyncio.to_thread(self.process.join, 3)
@@ -417,6 +499,20 @@ class ModelService:
                 await asyncio.to_thread(self.process.join, 2)
         if self.process and not self.process.is_alive():
             self.process.close()
+            self.process = None
+            for channel in (self.inbox, self.outbox):
+                channel.cancel_join_thread()
+                channel.close()
+            context = mp.get_context('spawn')
+            self.inbox, self.outbox, self.cancel = context.Queue(), context.Queue(), context.Event()
+
+    async def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        self.invalidate()
+        await self.stop_worker()
+        self.endpoint = None
         for channel in (self.inbox, self.outbox):
             channel.cancel_join_thread()
             channel.close()

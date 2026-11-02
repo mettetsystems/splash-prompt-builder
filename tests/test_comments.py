@@ -180,6 +180,33 @@ class CommentAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.model.calls,2)
         self.assertTrue(result['errors'])
         self.assertEqual(self.store.get(p['id'])['comments'],[])
+        self.assertEqual(result['review']['status'], 'needs_attention')
+        self.assertEqual(result['review']['invalid_response_samples'], ['not valid JSON'])
+
+    async def test_truncated_review_retries_with_more_room_and_rejects_partial_comments(self):
+        p=self.store.create('splash','Explain caching for beginners.')
+        budgets=[]
+        async def generate(messages, max_tokens, **kwargs):
+            self.assertNotIn('Return only the improved prompt', messages[0]['content'])
+            budgets.append(max_tokens)
+            return {'text':'QUESTION 1 | Which caching system should this cover?',
+                    'truncated':len(budgets)==1}
+        self.model.generate=generate
+        result=await review_document(self.agents,p['id'],1)
+        self.assertEqual(budgets,[384,768])
+        self.assertEqual(result['comments_added'],1)
+        self.assertEqual(result['errors'],[])
+        self.assertEqual(self.store.get(p['id'])['draft'],p['draft'])
+
+    async def test_two_truncated_responses_never_publish_partial_comments(self):
+        p=self.store.create('splash','Explain caching for beginners.')
+        async def generate(*args, **kwargs):
+            return {'text':'QUESTION 1 | Which caching system should this cover?', 'truncated':True}
+        self.model.generate=generate
+        result=await review_document(self.agents,p['id'],1)
+        self.assertEqual(result['comments_added'],0)
+        self.assertIn('output limit',result['errors'][0])
+        self.assertEqual(len(result['review']['metrics']),2)
 
     async def test_model_can_add_multiple_comments_and_reply_without_editing(self):
         p=self.store.create('splash','Use a modern stack. Launch soon.')

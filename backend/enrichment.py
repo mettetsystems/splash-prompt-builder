@@ -8,7 +8,7 @@ import re
 
 from backend.comments import thread
 
-PIPELINE_VERSION = 4
+PIPELINE_VERSION = 5
 MAX_SUGGESTIONS = 8
 
 REVIEW_INSTRUCTION = '''Improve the user's prompt as a careful document editor. Silently check its objective, audience, deliverables, constraints and unknowns. Clear wording needs no change. Do not output your analysis.

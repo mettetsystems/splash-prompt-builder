@@ -182,19 +182,22 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         await self.agents.enrich(other["id"], 1)
         fallback = self.models.generate.await_args.args[0][0]["content"]
         self.assertNotIn("Prefer short sentences.", fallback)
-        self.assertIn(DEFAULT_SYSTEM_PROMPTS["splash"]["text"], fallback)
+        self.assertNotIn('Return only the improved prompt', fallback)
+        self.assertIn('Focus on clear scope', fallback)
         self.assertNotIn(DEFAULT_SYSTEM_PROMPTS["splash-code"]["text"], fallback)
         coding = self.store.create("splash-code", "Explain caching.")
         self.models.generate.reset_mock()
         await self.agents.enrich(coding["id"], 1)
         coded = self.models.generate.await_args.args[0][0]["content"]
-        self.assertIn(DEFAULT_SYSTEM_PROMPTS["splash-code"]["text"], coded)
+        self.assertIn('Focus on implementation scope', coded)
+        self.assertNotIn('Return only the improved specification', coded)
         self.assertNotIn(DEFAULT_SYSTEM_PROMPTS["splash"]["text"], coded)
         search = self.store.create("splash-search", "Explain caching.")
         self.models.generate.reset_mock()
         await self.agents.enrich(search["id"], 1)
         searched = self.models.generate.await_args.args[0][0]["content"]
-        self.assertIn(DEFAULT_SYSTEM_PROMPTS["splash-search"]["text"], searched)
+        self.assertIn('Focus on research question', searched)
+        self.assertNotIn('Return only the improved research brief', searched)
         self.assertNotIn(DEFAULT_SYSTEM_PROMPTS["splash-code"]["text"], searched)
 
     async def test_enrichment_rejects_system_prompt_changes_during_inference(self):
