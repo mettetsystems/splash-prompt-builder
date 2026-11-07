@@ -1,10 +1,17 @@
 PYTHON ?= python3
 VENV_PYTHON := .venv/bin/python
+ARGS ?=
 
-.PHONY: setup build run dev-backend dev-frontend test latency audit package-macos
+.PHONY: setup start stop build run dev-backend dev-frontend test latency audit package-macos
 
 setup:
-	$(PYTHON) scripts/setup.py --dev
+	$(PYTHON) scripts/setup.py --dev $(ARGS)
+
+start:
+	$(PYTHON) scripts/start.py $(ARGS)
+
+stop:
+	$(PYTHON) scripts/stop.py $(ARGS)
 
 build:
 	npm --prefix frontend run build

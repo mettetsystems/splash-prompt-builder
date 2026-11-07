@@ -23,6 +23,20 @@ python3 scripts/setup.py --dev
 python3 scripts/start.py
 ```
 
+If Make is installed, the same commands are available as:
+
+```sh
+make setup
+make start
+# From a second terminal, after your draft is saved:
+make stop
+```
+
+Pass script options with `ARGS`, for example `make setup ARGS="--profile editor"`,
+`make start ARGS="--no-model --port 43828"`, or `make stop ARGS="--port 43828"`.
+`make start` runs in the foreground and uses the launcher's existing-instance checks.
+You can override the Python command with `PYTHON=python3.12`.
+
 On Windows, use PowerShell:
 
 ```powershell
